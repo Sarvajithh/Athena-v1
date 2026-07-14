@@ -1,0 +1,96 @@
+name: CI
+
+# Per PROJECT_RULES.md §4 ("CI is the only backstop and it is
+# non-negotiable") and Implementation Plan §12, all jobs below are
+# required and must be green before merge — there is no second human
+# reviewer on this project.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-lint:
+    name: rustfmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-test:
+    name: cargo test (unit + integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      - name: cargo build --workspace
+        run: cargo build --workspace
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  offline-mode:
+    name: cargo test (network disabled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+      # Dependencies are fetched with network access first (unavoidable —
+      # crates.io is not vendored), then the actual test run happens with
+      # network access removed, per Implementation Plan §11.1 /
+      # SPRINT1_SPEC.md §7 ("a CI job variant with network access
+      # disabled that builds and runs the unit + integration suites").
+      - name: Pre-fetch dependencies
+        run: cargo fetch --locked
+      - name: Run tests with network disabled
+        run: |
+          sudo unshare --net -- bash -c "
+            export PATH=$PATH &&
+            cargo test --workspace --offline
+          "
+
+  frontend-typecheck:
+    name: TypeScript strict-mode type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  ipc-contract-check:
+    name: IPC contract check (Rust <-> TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: python3 scripts/check_ipc_contract.py

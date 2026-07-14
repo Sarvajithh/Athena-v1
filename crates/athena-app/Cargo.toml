@@ -1,0 +1,43 @@
+[package]
+name = "athena-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# Tauri build script requirement (generates window/IPC glue).
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# athena-app is the only crate allowed `tauri` and the only crate allowed
+# `anyhow` internally (Implementation Plan §6, SPRINT1_SPEC.md §3). Exact
+# minor version pinned per Implementation Plan §1 ("Pin exact minor
+# version in Cargo.lock/package-lock.json; upgrade deliberately, once per
+# quarter at most").
+tauri = { version = "2.1", features = [] }
+anyhow = "1"
+
+# Structured logging (Implementation Plan §7): tracing + a rotating,
+# local JSON-lines file appender. No telemetry SDK, no remote shipping.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Internal dependency graph (Master Spec §4.5), mechanically enforced by
+# Cargo rather than convention (SPRINT1_SPEC.md Objective 1):
+#   athena-app -> athena-events -> athena-domain, athena-data
+#   athena-app -> athena-reasoning -> athena-domain, athena-data
+#   athena-app -> athena-ingestion -> athena-data
+# athena-app also depends on athena-data directly: main.rs's boot
+# sequence (Objective 5) opens the DB connection and runs migrations
+# itself, before any command/event/reasoning/ingestion code runs.
+# (athena-domain is reachable only transitively, via athena-events and
+# athena-reasoning, per the graph above — no direct edge is needed or
+# added since no S01 code path in athena-app touches it directly.)
+athena-data = { path = "../athena-data" }
+athena-events = { path = "../athena-events" }
+athena-reasoning = { path = "../athena-reasoning" }
+athena-ingestion = { path = "../athena-ingestion" }

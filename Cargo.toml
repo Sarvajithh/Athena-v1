@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/athena-domain",
+    "crates/athena-data",
+    "crates/athena-events",
+    "crates/athena-reasoning",
+    "crates/athena-ingestion",
+    "crates/athena-app",
+]
+
+# Shared workspace-level lint/profile settings. Individual crates opt in
+# via `[lints] workspace = true` where applicable.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.79"
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -1,0 +1,18 @@
+[package]
+name = "athena-reasoning"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# SPRINT1_SPEC.md §3: no third-party dependencies yet. The `LlmProvider`
+# trait and its `providers/` implementations (Implementation Plan §1,
+# §10.2) are explicitly out of scope for S01 (SPRINT1_SPEC.md §1,
+# "Explicitly out of scope... the LlmProvider trait, any outbound
+# network integration").
+#
+# Internal deps below establish the Master Spec §4.5 dependency graph
+# now (SPRINT1_SPEC.md Objective 1), unused until retrieval/grounding
+# logic lands.
+[dependencies]
+athena-domain = { path = "../athena-domain" }
+athena-data = { path = "../athena-data" }

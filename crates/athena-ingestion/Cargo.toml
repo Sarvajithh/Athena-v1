@@ -1,0 +1,13 @@
+[package]
+name = "athena-ingestion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# SPRINT1_SPEC.md §3: no third-party dependencies yet. The Codeforces/CSV
+# /ICS connectors (Master Spec §4.5) are later sprints' deliverables.
+#
+# Internal dep below establishes the Master Spec §4.5 dependency graph
+# now (SPRINT1_SPEC.md Objective 1), unused until a connector lands.
+[dependencies]
+athena-data = { path = "../athena-data" }

@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Tauri build output
+src-tauri/target/
+
+# Local runtime artifacts (never committed — user data, per Non-Negotiable §8)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+logs/
+*.log
+
+# Editor/OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env files — secrets never live in a committed file (Implementation Plan §1: OS keychain only)
+.env
+.env.*
