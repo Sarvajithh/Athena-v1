@@ -98,11 +98,19 @@ export interface DecisionRow {
   decided_at: string;
 }
 
+export interface RankedCandidateDto {
+  id: number;
+  headline: string;
+  reasoning: string;
+}
+
 export interface VerdictDto {
   headline: string;
   reasoning: string;
   confidence: Confidence;
   grounded_in_deadline_id: number | null;
+  /** Populated only when the Closeness Threshold trips (09_DECISION_ENGINE.md §4). */
+  runners_up: RankedCandidateDto[];
 }
 
 export interface BootstrapState {

@@ -63,3 +63,32 @@
   align-items: center;
   gap: var(--space-3);
 }
+
+/* Closeness Threshold runner-ups (09_DECISION_ENGINE.md §4) — visually
+ * subordinate to the primary verdict above: no glow, no headline-scale
+ * text, a quiet top border to read as "also considered," not a second
+ * competing answer. */
+.runnersUp {
+  position: relative;
+  list-style: none;
+  margin: var(--space-4) 0 0 0;
+  padding: var(--space-3) 0 0 0;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.runnerUpItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.runnerUpHeadline {
+  color: var(--text-secondary);
+}
+
+.runnerUpReasoning {
+  color: var(--text-tertiary);
+}

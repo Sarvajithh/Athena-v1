@@ -1,0 +1,30 @@
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+}
+
+.icon {
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.label {
+  color: var(--text-primary);
+  flex: none;
+  min-width: 84px;
+}
+
+.value {
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+}

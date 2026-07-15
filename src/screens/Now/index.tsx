@@ -1,61 +1,14 @@
-// import { useState } from 'react';
-// import { AlertCircle } from 'lucide-react';
 import { DensityToggle } from '../../components/shared/DensityToggle';
-// import { Icon } from '../../components/shared/Icon';
-// import { SeverityDot } from '../../components/shared/SeverityDot';
-// import {
-//   emptyDeepWorkAllocation,
-//   mockBottleneck,
-//   mockDeepWorkAllocation,
-//   mockDriftBanner,
-//   mockVerdict,
-// } from '../../mock/nowFixtures';
-// import { BottleneckStrip } from './BottleneckStrip';
 import { DeepWorkAllocationCard } from './DeepWorkAllocationCard';
+import { HealthStrip } from './HealthStrip';
+import { MissionStrip } from './MissionStrip';
 import styles from './Now.module.css';
+import { QuickLaunch } from './QuickLaunch';
 import { VerdictCard } from './VerdictCard';
 
 import { LoadingState } from '../../components/shared/LoadingState';
 import { useBootstrap } from '../../state/bootstrapContext';
-
-/**
- * Now — the default screen. Answers one question: what's the one thing
- * right now? (spec §5.2). Renders entirely against static mock fixtures
- * this sprint (SPRINT2_SPEC.md §0) — no IPC, no domain computation.
- */
-// export default function Now() {
-//   const [showEmpty, setShowEmpty] = useState(false);
-//   const allocation = showEmpty ? emptyDeepWorkAllocation : mockDeepWorkAllocation;
-
-//   return (
-//     <div className={styles.screen}>
-//       <div className={styles.header}>
-//         <p className={`${styles.eyebrow} type-caption`}>Now</p>
-//         <DensityToggle />
-//       </div>
-
-//       <VerdictCard verdict={mockVerdict} />
-
-//       <div className={styles.secondaryRow}>
-//         <div className={styles.driftBanner}>
-//           <SeverityDot severity={mockDriftBanner.severity} showLabel={false} />
-//           <Icon icon={AlertCircle} size="inline" />
-//           <span className={`${styles.driftText} type-caption`}>{mockDriftBanner.message}</span>
-//         </div>
-//         <BottleneckStrip bottleneck={mockBottleneck} />
-//         <DeepWorkAllocationCard allocation={allocation} />
-//       </div>
-
-//       {import.meta.env.DEV ? (
-//         <button type="button" className={styles.devToggle} onClick={() => setShowEmpty((v) => !v)}>
-//           Dev: toggle deep-work empty state
-//         </button>
-//       ) : null}
-//     </div>
-//   );
-// }
-
-
+import { useNavigation } from '../../state/navigationContext';
 
 function formatWindow(start: string, end: string): string {
   const format = (hhmm: string) => {
@@ -70,15 +23,38 @@ function formatWindow(start: string, end: string): string {
 }
 
 /**
- * Now — the default screen. Answers one question: what's the one thing
- * right now? (spec §5.2). Renders against `get_bootstrap_state` — real
- * persisted deadlines and profile data, not Sprint 2's static mock
- * fixtures. The verdict itself is computed by `athena-domain::priority`
- * (a minimal, honest, deterministic pick — see that module's doc
- * comment for what it deliberately does not implement).
+ * Now — the Athena OS Home screen (05_OS_HOME.md). Answers one
+ * question: what's the single highest-leverage thing right now, and
+ * why (§1's governing test). Every section renders from
+ * `get_bootstrap_state` — real persisted profile/semester/deadline
+ * data — with the verdict itself computed by the deterministic
+ * `athena-domain::priority` engine (09_DECISION_ENGINE.md). No mock
+ * values anywhere in this tree.
+ *
+ * Structural hierarchy, top to bottom, matches §2 exactly:
+ *   0. Mission strip            — always shown, real `user_profile` fields
+ *   1. Recommended Action       — the dominant verdict card
+ *   2. Weakness Snapshot        — intentionally omitted, see note below
+ *   3. Today's Intelligence     — intentionally omitted, see note below
+ *   4. Health Strip             — Semester · Career · Masters
+ *   5. Opportunity Feed         — intentionally omitted, see note below
+ *   6. Quick Launch             — bottom, lowest emphasis
+ *
+ * Sections 2, 3, and 5 are conditionally rendered by design (§2: "take
+ * zero vertical space when there's nothing real to show"). All three
+ * are always-empty today because their backing tables
+ * (`bottlenecks`, `drift_signals`, `opportunities`,
+ * `project_status_snapshots`, `research_activities`) don't exist in
+ * this schema, and this change is explicitly scoped not to modify
+ * storage. Per §2's own rule — "an empty bottleneck section is not
+ * shown as 'no bottlenecks! 🎉' — it simply isn't there" — the correct,
+ * spec-faithful render of "always empty" is exactly what a genuinely
+ * inactive one would already look like: absent. Nothing here fakes
+ * data to fill those three sections.
  */
 export default function Now() {
   const { state, loading } = useBootstrap();
+  const { navigate } = useNavigation();
 
   if (loading && !state) {
     return (
@@ -108,11 +84,29 @@ export default function Now() {
         <DensityToggle />
       </div>
 
+      {state.profile ? <MissionStrip profile={state.profile} /> : null}
+
       <VerdictCard verdict={state.verdict} />
 
       <div className={styles.secondaryRow}>
         <DeepWorkAllocationCard allocation={allocation} />
       </div>
+
+      {state.profile ? (
+        <section className={styles.section}>
+          <h2 className={`${styles.sectionTitle} type-body-medium`}>Semester · Career · Masters</h2>
+          <HealthStrip
+            profile={state.profile}
+            careerDeadlines={state.career_deadlines}
+            onOpenTrajectory={() => navigate('trajectory')}
+          />
+        </section>
+      ) : null}
+
+      <QuickLaunch
+        onOpenSemesterSetup={() => navigate('semester-setup')}
+        onOpenDecisionLog={() => navigate('decision-log')}
+      />
     </div>
   );
 }

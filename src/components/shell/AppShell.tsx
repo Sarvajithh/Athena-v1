@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { defaultScreenId, routes, type ScreenId } from '../../router';
 import { DensityProvider } from '../../state/densityContext';
 import { ModalProvider } from '../../state/modalContext';
+import { NavigationProvider } from '../../state/navigationContext';
 import { LoadingState } from '../shared/LoadingState';
 import { ModalLayer } from './ModalLayer';
 import { NavRail } from './NavRail';
@@ -46,18 +47,20 @@ export function AppShell() {
   return (
     <DensityProvider>
       <ModalProvider>
-        <div className={styles.shell}>
-          <TitleBar />
-          <div className={styles.body}>
-            <NavRail activeScreen={activeScreen} onNavigate={navigate} />
-            <main className={styles.content} key={activeScreen}>
-              <Suspense fallback={<LoadingState shape="verdict" />}>
-                <ActiveScreen />
-              </Suspense>
-            </main>
+        <NavigationProvider activeScreen={activeScreen} navigate={navigate}>
+          <div className={styles.shell}>
+            <TitleBar />
+            <div className={styles.body}>
+              <NavRail activeScreen={activeScreen} onNavigate={navigate} />
+              <main className={styles.content} key={activeScreen}>
+                <Suspense fallback={<LoadingState shape="verdict" />}>
+                  <ActiveScreen />
+                </Suspense>
+              </main>
+            </div>
+            <ModalLayer />
           </div>
-          <ModalLayer />
-        </div>
+        </NavigationProvider>
       </ModalProvider>
     </DensityProvider>
   );

@@ -16,28 +16,19 @@
   margin: 0;
 }
 
-.driftBanner {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.driftText {
-  color: var(--text-secondary);
-}
-
 .secondaryRow {
   display: flex;
   flex-direction: column;
   gap: var(--density-section-gap);
 }
 
-.devToggle {
-  align-self: flex-start;
-  background: none;
-  border: 1px dashed var(--border-subtle);
-  color: var(--text-tertiary);
-  border-radius: var(--radius-control);
-  padding: var(--space-1) var(--space-2);
-  cursor: pointer;
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sectionTitle {
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-2) 0;
 }

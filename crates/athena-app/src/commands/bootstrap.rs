@@ -12,6 +12,16 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
 
+/// Mirrors `athena_domain::priority::RankedCandidate` (see `VerdictDto`'s
+/// own doc comment for why this mapping happens here rather than via
+/// `Serialize` on the domain type itself).
+#[derive(Debug, Clone, Serialize)]
+pub struct RankedCandidateDto {
+    pub id: i64,
+    pub headline: String,
+    pub reasoning: String,
+}
+
 /// Mirrors `athena_domain::priority::Verdict`, mapped to owned strings
 /// for serialization — `athena-domain` deliberately takes no
 /// third-party dependencies (including serde), per its Cargo.toml, so
@@ -23,6 +33,9 @@ pub struct VerdictDto {
     pub reasoning: String,
     pub confidence: String,
     pub grounded_in_deadline_id: Option<i64>,
+    /// Populated only when the Closeness Threshold trips
+    /// (09_DECISION_ENGINE.md §4) — see `Now`'s `VerdictCard`.
+    pub runners_up: Vec<RankedCandidateDto>,
 }
 
 /// Everything the frontend needs to render `Now`, `Trajectory`,
@@ -81,6 +94,15 @@ pub fn get_bootstrap_state(db: State<'_, Mutex<Connection>>) -> Result<Bootstrap
             priority::Confidence::InsufficientData => "insufficient_data".to_string(),
         },
         grounded_in_deadline_id: verdict.grounded_in_deadline_id,
+        runners_up: verdict
+            .runners_up
+            .into_iter()
+            .map(|r| RankedCandidateDto {
+                id: r.id,
+                headline: r.headline,
+                reasoning: r.reasoning,
+            })
+            .collect(),
     };
 
     Ok(BootstrapState {
