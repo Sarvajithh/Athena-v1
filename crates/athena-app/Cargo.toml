@@ -34,10 +34,21 @@ serde_json = "1"
 # athena-app also depends on athena-data directly: main.rs's boot
 # sequence (Objective 5) opens the DB connection and runs migrations
 # itself, before any command/event/reasoning/ingestion code runs.
-# (athena-domain is reachable only transitively, via athena-events and
-# athena-reasoning, per the graph above — no direct edge is needed or
-# added since no S01 code path in athena-app touches it directly.)
+#
+# A direct athena-app -> athena-domain edge was added alongside the
+# onboarding feature: `commands::bootstrap::get_bootstrap_state` calls
+# `athena_domain::priority::resolve_priority` directly on deadlines it
+# just fetched from athena-data, rather than routing through
+# athena-events/athena-reasoning (neither of which has an onboarding-era
+# reason to exist yet).
 athena-data = { path = "../athena-data" }
+athena-domain = { path = "../athena-domain" }
 athena-events = { path = "../athena-events" }
 athena-reasoning = { path = "../athena-reasoning" }
 athena-ingestion = { path = "../athena-ingestion" }
+
+# Needed to name the `rusqlite::Connection` type held in Tauri-managed
+# state (`app.manage(Mutex::new(conn))` in main.rs) so the onboarding
+# commands can declare `State<'_, Mutex<Connection>>`. Same pinned
+# version as athena-data (the only crate that opens/migrates it).
+rusqlite = { version = "0.31", features = ["bundled"] }

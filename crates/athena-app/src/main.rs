@@ -56,7 +56,12 @@ fn init_logging(log_dir: &std::path::Path) -> anyhow::Result<tracing_appender::n
 
 fn main() {
     let builder = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::get_app_version])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_app_version,
+            commands::bootstrap::get_bootstrap_state,
+            commands::onboarding::create_profile,
+            commands::onboarding::commit_semester_setup,
+        ])
         .setup(|app| {
             let paths = resolve_app_paths(app.handle())?;
 

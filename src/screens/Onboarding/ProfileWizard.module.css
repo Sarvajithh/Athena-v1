@@ -1,51 +1,37 @@
-.screen {
-  display: flex;
-  flex-direction: column;
-  gap: var(--density-group-gap);
-  max-width: 960px;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.eyebrow {
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.sectionTitle {
-  color: var(--text-secondary);
-  margin: 0 0 var(--space-3) 0;
-}
-
-.placeholderCard {
-  color: var(--text-tertiary);
-}
-
-.wizardCard {
+.wrapper {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-4);
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--accent);
+}
+
+.title {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.card {
+  padding: var(--density-card-padding);
 }
 
 .form {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-}
-
-.fieldRow {
-  display: flex;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.fieldRow > .field {
-  flex: 1;
-  min-width: 160px;
 }
 
 .field {
@@ -72,13 +58,19 @@
   border-color: var(--accent);
 }
 
-.repeatRow {
+.hint {
+  color: var(--text-tertiary);
+}
+
+.review {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
+  gap: var(--space-2);
+}
+
+.reviewLine {
+  color: var(--text-primary);
+  margin: 0;
 }
 
 .error {
@@ -89,10 +81,10 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--space-3);
+  margin-top: var(--space-2);
 }
 
 .primaryButton {
-  align-self: flex-start;
   background: var(--accent);
   color: var(--accent-on);
   border: none;
@@ -113,33 +105,16 @@
 }
 
 .secondaryButton {
-  align-self: flex-start;
   background: none;
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   border-radius: var(--radius-control);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-5);
   font-family: var(--font-family);
   cursor: pointer;
 }
 
-.removeButton {
-  align-self: flex-start;
-  background: none;
-  border: none;
-  color: var(--severity-urgent);
-  font-family: var(--font-family);
-  font-size: var(--type-caption-size);
-  cursor: pointer;
-  padding: 0;
-}
-
-.devToggle {
-  align-self: flex-start;
-  background: none;
-  border: 1px dashed var(--border-subtle);
-  color: var(--text-tertiary);
-  border-radius: var(--radius-control);
-  padding: var(--space-1) var(--space-2);
-  cursor: pointer;
+.secondaryButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

@@ -1,9 +1,18 @@
 /**
- * Presentation-layer types for the static mock fixtures this sprint
- * renders against (SPRINT2_SPEC.md §0, §6). These describe the *shape*
- * of data the real IPC layer will eventually supply — they carry no
- * computation and are not a substitute for the domain layer's own
- * types in `athena-domain` (MASTER_SPECIFICATION.md §4.4).
+ * Shared presentation-layer types (originally written in Sprint 2 to
+ * describe the shape of static mock fixtures; those fixtures are gone
+ * as of the onboarding feature — see `ipc/bindings.ts` for the real,
+ * IPC-backed types). What remains here is genuinely reusable UI-layer
+ * vocabulary (severity/confidence/trend labels, wizard-step status,
+ * etc.) still consumed by real components. These carry no computation
+ * and are not a substitute for the domain layer's own types in
+ * `athena-domain` (MASTER_SPECIFICATION.md §4.4). A few types below
+ * (`Bottleneck`, `DriftBanner`, `LoadState`, `CareerThread`,
+ * `MetricSwimlane`, `DecisionEntry`) are currently unused — the
+ * features they described (bottleneck/drift detection, trend
+ * swimlanes) don't have a real data source yet and are intentionally
+ * not faked; they're left in place for whichever future sprint adds
+ * that data source.
  */
 
 export type Severity = 'watch' | 'flag' | 'urgent';

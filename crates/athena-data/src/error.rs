@@ -15,6 +15,11 @@ pub enum DataError {
     /// The migration runner failed to apply one or more pending
     /// migrations.
     Migration(refinery::Error),
+    /// A JSON column (`meeting_pattern`, `snapshot`, `changed_fields`,
+    /// `payload`) failed to serialize or deserialize. Added alongside
+    /// the onboarding-schema repositories (V2 migration), the first
+    /// tables in the schema to carry a JSON column.
+    Serialization(serde_json::Error),
 }
 
 impl fmt::Display for DataError {
@@ -22,6 +27,7 @@ impl fmt::Display for DataError {
         match self {
             DataError::Connection(e) => write!(f, "database connection error: {e}"),
             DataError::Migration(e) => write!(f, "migration error: {e}"),
+            DataError::Serialization(e) => write!(f, "JSON serialization error: {e}"),
         }
     }
 }
@@ -31,6 +37,7 @@ impl std::error::Error for DataError {
         match self {
             DataError::Connection(e) => Some(e),
             DataError::Migration(e) => Some(e),
+            DataError::Serialization(e) => Some(e),
         }
     }
 }
@@ -44,6 +51,12 @@ impl From<rusqlite::Error> for DataError {
 impl From<refinery::Error> for DataError {
     fn from(e: refinery::Error) -> Self {
         DataError::Migration(e)
+    }
+}
+
+impl From<serde_json::Error> for DataError {
+    fn from(e: serde_json::Error) -> Self {
+        DataError::Serialization(e)
     }
 }
 

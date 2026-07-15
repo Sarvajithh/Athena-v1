@@ -76,9 +76,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "athena-data",
+ "athena-domain",
  "athena-events",
  "athena-ingestion",
  "athena-reasoning",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",
@@ -94,6 +96,8 @@ version = "0.1.0"
 dependencies = [
  "refinery",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

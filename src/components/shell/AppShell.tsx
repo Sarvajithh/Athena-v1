@@ -14,8 +14,11 @@ import styles from './AppShell.module.css';
  *  - NavRail
  *  - ContentRouter (renders exactly one of the four screens)
  *  - ModalLayer (reserved, behaviorally inert)
- * (SPRINT2_SPEC.md §4). Boots directly to Now — no splash/onboarding
- * flow, since none is specified (§18 Definition of Done).
+ * (SPRINT2_SPEC.md §4). Boots directly to Now within the main app.
+ * `App.tsx` is the layer that decides whether to render this shell at
+ * all — it renders the pre-AppShell Onboarding flow instead whenever no
+ * profile/semester exists yet (03_ONBOARDING.md §1), bypassing the nav
+ * rail entirely for first launch.
  */
 export function AppShell() {
   const [activeScreen, setActiveScreen] = useState<ScreenId>(defaultScreenId);

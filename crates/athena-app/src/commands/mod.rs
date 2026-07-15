@@ -4,7 +4,8 @@
 //!
 //! This is deliberately the only command registered in S01 — a
 //! health-check/version round trip, nothing domain-related yet.
-
+pub mod bootstrap;
+pub mod onboarding;
 use serde::Serialize;
 
 /// The shape returned to the frontend. Kept as an explicit typed struct

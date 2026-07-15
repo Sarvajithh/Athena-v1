@@ -20,6 +20,15 @@ rust-version.workspace = true
 rusqlite = { version = "0.31", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 
+# Added for the onboarding-schema repositories (V2 migration): typed rows
+# (`user_profile`, `courses`, `deadlines`, ...) are serde-serializable so
+# athena-app can hand them to Tauri's IPC layer unmodified in shape
+# (01_ARCHITECTURE.md §2.1 — "no transformation of domain meaning happens
+# above athena-data"), and `meeting_pattern` / `snapshot` /
+# `changed_fields` / `payload` are stored as JSON text columns.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # Dev-only: needed for the temp-file SQLite integration test (SPRINT1_SPEC.md
 # §7, "open a temp-file SQLite DB, run migrations..."). Never shipped in the
 # built app.
