@@ -1,0 +1,21 @@
+.crash {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2, 8px);
+  background: var(--bg-canvas);
+  color: var(--text-primary, #f4f4f5);
+  padding: var(--space-6, 32px);
+  text-align: center;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.message {
+  color: var(--text-secondary, #a1a1aa);
+  max-width: 480px;
+}
