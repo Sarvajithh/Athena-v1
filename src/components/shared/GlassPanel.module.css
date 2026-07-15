@@ -1,0 +1,23 @@
+.panel {
+  padding: var(--space-6);
+}
+
+/* The blur itself animates in, not just opacity (§11, §19 test #10). */
+.panel[data-state='entering'] {
+  animation: blurIn var(--duration-deliberate, 360ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)) forwards;
+}
+
+@keyframes blurIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+    backdrop-filter: blur(0px) saturate(100%);
+    -webkit-backdrop-filter: blur(0px) saturate(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+  }
+}

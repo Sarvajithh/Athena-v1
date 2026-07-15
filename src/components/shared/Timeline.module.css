@@ -1,0 +1,36 @@
+.timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.entry {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: var(--space-4);
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.node {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  margin-top: 6px;
+  flex: none;
+}
+
+.connector {
+  width: 1px;
+  flex: 1;
+  background: var(--border-subtle);
+  margin: var(--space-1) 0;
+}
+
+.content {
+  padding-bottom: var(--space-5);
+}

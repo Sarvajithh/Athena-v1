@@ -1,0 +1,61 @@
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { defaultScreenId, routes, type ScreenId } from '../../router';
+import { DensityProvider } from '../../state/densityContext';
+import { ModalProvider } from '../../state/modalContext';
+import { LoadingState } from '../shared/LoadingState';
+import { ModalLayer } from './ModalLayer';
+import { NavRail } from './NavRail';
+import { TitleBar } from './TitleBar';
+import styles from './AppShell.module.css';
+
+/**
+ * AppShell
+ *  - TitleBar
+ *  - NavRail
+ *  - ContentRouter (renders exactly one of the four screens)
+ *  - ModalLayer (reserved, behaviorally inert)
+ * (SPRINT2_SPEC.md §4). Boots directly to Now — no splash/onboarding
+ * flow, since none is specified (§18 Definition of Done).
+ */
+export function AppShell() {
+  const [activeScreen, setActiveScreen] = useState<ScreenId>(defaultScreenId);
+
+  const navigate = useCallback((id: ScreenId) => setActiveScreen(id), []);
+
+  // Keyboard shortcuts ⌘1–⌘4 / Ctrl+1–4 map to the four screens (§5).
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const route = routes.find((r) => r.shortcut === event.key);
+      if (!route) return;
+      event.preventDefault();
+      setActiveScreen(route.id);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // `routes` is a fixed, non-empty literal (4 screens, see router.tsx), so the
+  // fallback index access is safe; non-null assert to satisfy
+  // noUncheckedIndexedAccess (Sprint1 tsconfig) without weakening the type.
+  const ActiveScreen = routes.find((route) => route.id === activeScreen)?.component ?? routes[0]!.component;
+
+  return (
+    <DensityProvider>
+      <ModalProvider>
+        <div className={styles.shell}>
+          <TitleBar />
+          <div className={styles.body}>
+            <NavRail activeScreen={activeScreen} onNavigate={navigate} />
+            <main className={styles.content} key={activeScreen}>
+              <Suspense fallback={<LoadingState shape="verdict" />}>
+                <ActiveScreen />
+              </Suspense>
+            </main>
+          </div>
+          <ModalLayer />
+        </div>
+      </ModalProvider>
+    </DensityProvider>
+  );
+}

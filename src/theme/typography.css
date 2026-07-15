@@ -1,0 +1,87 @@
+/**
+ * Typography — SPRINT2_SPEC.md §8.
+ * One family (Inter), two weights (400 / 600) only. Tabular numerals
+ * enabled globally. Do not add a third weight without a spec revision
+ * (PROJECT_RULES.md §2, "no speculative generality").
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+
+:root {
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  --type-display-size: 56px;
+  --type-display-weight: 600;
+  --type-display-line: 1.1;
+  --type-display-tracking: -0.02em;
+
+  --type-headline-size: 24px;
+  --type-headline-weight: 600;
+  --type-headline-line: 1.25;
+
+  --type-body-size: 15px;
+  --type-body-weight: 400;
+  --type-body-line: 1.4;
+
+  --type-body-medium-size: 15px;
+  --type-body-medium-weight: 600;
+  --type-body-medium-line: 1.4;
+
+  --type-caption-size: 13px;
+  --type-caption-weight: 400;
+  --type-caption-line: 1.4;
+
+  --type-micro-size: 11px;
+  --type-micro-weight: 400;
+  --type-micro-line: 1.3;
+  --type-micro-tracking: 0.02em;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.type-display {
+  font-size: var(--type-display-size);
+  font-weight: var(--type-display-weight);
+  line-height: var(--type-display-line);
+  letter-spacing: var(--type-display-tracking);
+  font-variant-numeric: tabular-nums;
+}
+
+.type-headline {
+  font-size: var(--type-headline-size);
+  font-weight: var(--type-headline-weight);
+  line-height: var(--type-headline-line);
+}
+
+.type-body {
+  font-size: var(--type-body-size);
+  font-weight: var(--type-body-weight);
+  line-height: var(--type-body-line);
+}
+
+.type-body-medium {
+  font-size: var(--type-body-medium-size);
+  font-weight: var(--type-body-medium-weight);
+  line-height: var(--type-body-medium-line);
+}
+
+.type-caption {
+  font-size: var(--type-caption-size);
+  font-weight: var(--type-caption-weight);
+  line-height: var(--type-caption-line);
+  color: var(--text-secondary);
+}
+
+.type-micro {
+  font-size: var(--type-micro-size);
+  font-weight: var(--type-micro-weight);
+  line-height: var(--type-micro-line);
+  letter-spacing: var(--type-micro-tracking);
+  text-transform: uppercase;
+}

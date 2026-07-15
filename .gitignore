@@ -17,6 +17,10 @@ src-tauri/target/
 *.sqlite-shm
 *.sqlite-journal
 logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 *.log
 
 # Editor/OS cruft

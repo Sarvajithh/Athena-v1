@@ -1,0 +1,29 @@
+/**
+ * Glassmorphism — SPRINT2_SPEC.md §7, §12.
+ * This is the ONLY surface treatment allowed to use backdrop-filter.
+ * Consumed exclusively by GlassPanel.tsx, which is in turn used only
+ * inside ModalLayer (Definition of Done, §18). Do not import this file
+ * or replicate `.glass-surface` anywhere else.
+ */
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .glass-surface {
+    background: var(--bg-glass);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+  }
+}
+
+/* Fallback for platforms without backdrop-filter support — never drop
+   below AA contrast by falling back to a transparent surface (§16). */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-surface {
+    background: var(--bg-glass-fallback);
+  }
+}
+
+.glass-surface {
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-glass);
+  box-shadow: var(--glass-shadow);
+}

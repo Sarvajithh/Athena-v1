@@ -1,0 +1,61 @@
+.dialog {
+  width: 420px;
+  max-width: calc(100vw - var(--space-7) * 2);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--accent);
+  margin-bottom: var(--space-3);
+}
+
+.title {
+  color: var(--text-primary);
+  margin: 0 0 var(--space-2) 0;
+}
+
+.body {
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-5) 0;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.buttonPrimary {
+  background: var(--accent);
+  color: var(--accent-on);
+  border: none;
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  transition: background var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.buttonPrimary:hover {
+  background: var(--accent-hover);
+}
+
+.buttonGhost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.buttonGhost:hover {
+  color: var(--text-primary);
+}
+
+.devNote {
+  color: var(--text-tertiary);
+  margin-top: var(--space-4);
+}

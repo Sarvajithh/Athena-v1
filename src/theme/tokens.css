@@ -1,0 +1,139 @@
+/**
+ * Design tokens — SPRINT2_SPEC.md §7 (color), §9 (spacing).
+ * Every screen/component consumes these custom properties only.
+ * No hex or px literal for color/spacing may appear outside this file
+ * and typography.css (Definition of Done, SPRINT2_SPEC.md §18).
+ */
+
+:root {
+  /* ---- Base surfaces (§7) ---- */
+  --bg-canvas: #08090c;
+  --bg-surface: #121319;
+  --bg-surface-raised: #1a1b24;
+  --border-subtle: #24252e;
+
+  /* ---- Glass surfaces — ModalLayer only (§7, §12) ---- */
+  --bg-glass: rgba(20, 20, 28, 0.55);
+  --bg-glass-fallback: rgba(18, 19, 25, 0.96);
+  --border-glass: rgba(139, 124, 246, 0.14);
+  --glass-blur: blur(24px) saturate(140%);
+  --glass-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+
+  /* ---- Text (§7) ---- */
+  --text-primary: #f1f0f7;
+  --text-secondary: #9896aa;
+  --text-tertiary: #59586a;
+
+  /* ---- Accent — the one thing that matters (§7) ---- */
+  --accent: #8b7cf6;
+  --accent-hover: #9d8ff9;
+  --accent-muted: #5b4fbf;
+  --accent-glow: rgba(139, 124, 246, 0.16);
+  --accent-on: #08090c; /* text on top of a solid accent fill */
+
+  /* ---- Severity — deliberately non-purple (§7, spec §1.2) ---- */
+  --severity-watch: #6c87a6;
+  --severity-flag: #c9a25c;
+  --severity-urgent: #c86a63;
+
+  /* ---- Confidence (§7, spec §6.3) ---- */
+  --confidence-confirmed: #7fb89a;
+  --confidence-inferred: #9896aa;
+  --confidence-insufficient: #59586a;
+
+  /* ---- Spacing — 8px base unit (§9) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* ---- Radius (§12, §13) ---- */
+  --radius-card: 12px;
+  --radius-glass: 16px;
+  --radius-window: 10px;
+  --radius-control: 8px;
+
+  /* ---- Motion (§11) — mirrored as CSS custom properties so every
+     stylesheet can reference them without a magic-number fallback.
+     Canonical numeric source of truth is theme/motion.ts. ---- */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 120ms;
+  --duration-standard: 220ms;
+  --duration-deliberate: 360ms;
+
+  /* ---- Density-dependent padding, reassigned by [data-density] (§9) ---- */
+  --density-card-padding: var(--space-4);
+  --density-section-gap: var(--space-5);
+  --density-group-gap: var(--space-6);
+}
+
+/* Detail density steps every gap down one notch, floor at --space-3 (§9) */
+[data-density='detail'] {
+  --density-card-padding: var(--space-3);
+  --density-section-gap: var(--space-4);
+  --density-group-gap: var(--space-5);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+::selection {
+  background: var(--accent-muted);
+  color: var(--text-primary);
+}
+
+/* Focus visibility — never suppressed (§12, §16) */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Reduced motion — app stays fully usable and legible with motion off
+ * (§16). Individual components still handle their own semantics (e.g.
+ * --accent-glow stops breathing entirely rather than just shortening). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+    scroll-behavior: auto !important;
+  }
+}

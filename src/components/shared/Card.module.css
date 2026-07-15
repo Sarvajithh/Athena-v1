@@ -1,0 +1,18 @@
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  padding: var(--density-card-padding);
+  transition: background var(--transition-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+/* Elevation reads through color, not shadow, on flat surfaces (§12) —
+ * only applied when the card is genuinely interactive (§17). */
+.interactive {
+  cursor: pointer;
+}
+
+.interactive:hover,
+.interactive:focus-visible {
+  background: var(--bg-surface-raised);
+}

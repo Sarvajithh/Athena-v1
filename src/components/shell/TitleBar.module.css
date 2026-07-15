@@ -1,0 +1,74 @@
+.titleBar {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  min-height: 40px;
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-subtle);
+  -webkit-app-region: drag;
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
+}
+
+.captionControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  -webkit-app-region: no-drag;
+}
+
+/* macOS convention: traffic lights on the left (§13, §17). */
+.titleBar[data-platform='macos'] {
+  flex-direction: row;
+}
+
+.titleBar[data-platform='macos'] .captionControls {
+  order: 0;
+}
+
+.titleBar[data-platform='macos'] .appName {
+  order: 1;
+  margin-left: var(--space-2);
+}
+
+/* Windows/Linux convention: caption buttons on the right (§13, §17). */
+.titleBar[data-platform='other'] {
+  flex-direction: row;
+}
+
+.titleBar[data-platform='other'] .appName {
+  order: 0;
+}
+
+.titleBar[data-platform='other'] .captionControls {
+  order: 1;
+  margin-left: auto;
+}
+
+.appName {
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg-surface-raised);
+  padding: 0;
+  cursor: default;
+}
+
+.captionButton {
+  width: 28px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+  cursor: default;
+}

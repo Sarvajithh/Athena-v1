@@ -1,0 +1,17 @@
+.wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 50%;
+  /* No ring, no glow — the calmest possible rendering (§12). */
+}
+
+.label {
+  color: var(--text-secondary);
+}

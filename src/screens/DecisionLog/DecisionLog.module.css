@@ -1,0 +1,27 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-group-gap);
+  max-width: 760px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.eyebrow {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.devToggle {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+}

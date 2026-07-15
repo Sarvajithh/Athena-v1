@@ -1,0 +1,38 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-8) var(--space-7);
+  animation: crossfade var(--duration-standard, 220ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+/* Nav transitions crossfade, they don't slide — four flat top-level
+ * screens have no spatial/drill-down hierarchy (§11). */
+@keyframes crossfade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .content {
+    padding: var(--space-6) var(--space-5);
+  }
+}

@@ -1,0 +1,28 @@
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.option {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1) var(--space-3);
+  border-radius: calc(var(--radius-control) - 2px);
+  color: var(--text-secondary);
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+    background var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.option[data-active='true'] {
+  color: var(--accent-on);
+  background: var(--accent);
+}
+
+.option:not([data-active='true']):hover {
+  color: var(--text-primary);
+}

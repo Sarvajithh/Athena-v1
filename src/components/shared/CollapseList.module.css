@@ -1,0 +1,37 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.hiddenGroup {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--duration-standard, 220ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.hiddenGroup[data-expanded='true'] {
+  grid-template-rows: 1fr;
+}
+
+.hiddenGroupInner {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.expandButton {
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  transition: color var(--duration-fast, 120ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.expandButton:hover {
+  color: var(--text-primary);
+}

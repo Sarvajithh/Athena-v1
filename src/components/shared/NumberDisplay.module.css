@@ -1,0 +1,21 @@
+.wrapper {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.value {
+  color: var(--text-primary);
+}
+
+.unit {
+  color: var(--text-secondary);
+}
+
+/* Trend arrow is informational only — never colored red/green (§12). */
+.trend {
+  opacity: 0.6;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
