@@ -1,10 +1,9 @@
-//! The one IPC command this sprint proves end-to-end (SPRINT1_SPEC.md
-//! Objective 3). Named as an imperative verb per Implementation Plan
-//! §2.3 ("Commands are always named as imperative verbs").
-//!
-//! This is deliberately the only command registered in S01 — a
-//! health-check/version round trip, nothing domain-related yet.
+//! IPC commands. `get_app_version` below was S01's one health-check/
+//! version round trip (SPRINT1_SPEC.md Objective 3); every command in
+//! this crate is named as an imperative verb per Implementation Plan
+//! §2.3. `integrations` (07_INTEGRATIONS.md) is the connector surface.
 pub mod bootstrap;
+pub mod integrations;
 pub mod onboarding;
 pub mod planner;
 use serde::Serialize;

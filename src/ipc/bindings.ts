@@ -255,3 +255,166 @@ export interface CommitSemesterSetupInput {
 export async function commitSemesterSetup(input: CommitSemesterSetupInput): Promise<number> {
   return invoke<number>("commit_semester_setup", { input });
 }
+
+// ---------------------------------------------------------------------
+// Integrations — mirrors crates/athena-app/src/commands/integrations.rs
+// (07_INTEGRATIONS.md). Every interface below is a 1:1 mirror of a Rust
+// DTO's public fields, same "no reshaping on this side" rule as above.
+// ---------------------------------------------------------------------
+
+export type SourceKey =
+  | "codeforces"
+  | "leetcode"
+  | "github"
+  | "calendar_ics"
+  | "pdf_import"
+  | "csv_import"
+  | "manual";
+
+export type SyncStatus = "disconnected" | "idle" | "syncing" | "ok" | "error";
+
+export interface DataSourceDto {
+  source_key: SourceKey;
+  kind: "poll" | "import" | "always_on";
+  status: SyncStatus;
+  last_synced_at: string | null;
+  last_error: string | null;
+  config_json: string | null;
+  has_credential: boolean;
+}
+
+/** Every connector's current status (§5) — what the Connectors step boots from. */
+export async function listDataSources(): Promise<DataSourceDto[]> {
+  return invoke<DataSourceDto[]>("list_data_sources");
+}
+
+// --- Codeforces (§1.1) ---
+
+export interface CodeforcesSnapshotDto {
+  handle: string;
+  rating: number | null;
+  max_rating: number | null;
+  rank: string | null;
+  solved_count: number;
+  fetched_at: string;
+}
+
+/** Saves the handle and syncs immediately. Never throws on a failed sync — read `status`/`last_error` off the result. */
+export async function syncCodeforces(handle: string): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("sync_codeforces", { handle });
+}
+
+export async function getLatestCodeforcesSnapshot(): Promise<CodeforcesSnapshotDto | null> {
+  return invoke<CodeforcesSnapshotDto | null>("get_latest_codeforces_snapshot");
+}
+
+// --- LeetCode (§1.2) ---
+
+export interface DsaPracticeLogDto {
+  handle: string;
+  total_solved: number;
+  easy_solved: number;
+  medium_solved: number;
+  hard_solved: number;
+  fetched_at: string;
+}
+
+export async function syncLeetCode(handle: string): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("sync_leetcode", { handle });
+}
+
+export async function getLatestLeetCodeSnapshot(): Promise<DsaPracticeLogDto | null> {
+  return invoke<DsaPracticeLogDto | null>("get_latest_leetcode_snapshot");
+}
+
+// --- GitHub (§1.3) ---
+
+/** `token` empty/whitespace clears the stored token. Never leaves the keychain otherwise (§4). */
+export async function saveGithubToken(token: string): Promise<void> {
+  return invoke<void>("save_github_token", { token });
+}
+
+export async function deleteGithubToken(): Promise<void> {
+  return invoke<void>("delete_github_token");
+}
+
+export interface LinkedGithubRepoDto {
+  repo_full_name: string;
+  added_at: string;
+}
+
+export async function linkGithubRepo(repoFullName: string): Promise<void> {
+  return invoke<void>("link_github_repo", { repoFullName });
+}
+
+export async function unlinkGithubRepo(repoFullName: string): Promise<void> {
+  return invoke<void>("unlink_github_repo", { repoFullName });
+}
+
+export async function listLinkedGithubRepos(): Promise<LinkedGithubRepoDto[]> {
+  return invoke<LinkedGithubRepoDto[]>("list_linked_github_repos");
+}
+
+export interface ProjectStatusSnapshotDto {
+  repo_full_name: string;
+  commit_count_30d: number;
+  open_pr_count: number;
+  open_issue_count: number;
+  last_commit_at: string | null;
+  fetched_at: string;
+}
+
+/** Syncs every linked repo; a single repo's failure doesn't abort the rest (see Rust doc comment). */
+export async function syncGithub(): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("sync_github");
+}
+
+export async function listProjectStatusSnapshots(): Promise<ProjectStatusSnapshotDto[]> {
+  return invoke<ProjectStatusSnapshotDto[]>("list_project_status_snapshots");
+}
+
+// --- Calendar Import (§1.4), CSV Import (§1.6), PDF Import (§1.5) ---
+//
+// None of these three commands writes to the database: Semester Setup's
+// wizard (where every one of these is triggered, per §1.4/§1.5/§1.6's
+// own "through Semester Setup") runs before `commitSemesterSetup` ever
+// creates the `semesters` row `deadlines` would need to reference. Each
+// command below only parses/extracts and hands back rows already shaped
+// like `DeadlineInput`, for the wizard to merge into its own local
+// Deadlines-step state — reviewable, editable, removable — and commit
+// the one existing way, alongside everything else (see the matching
+// Rust doc comment in `commands::integrations` for the full reasoning).
+
+/** A parsed source row, shaped exactly like `DeadlineInput` minus `course_index` (the wizard fills that in, if any). */
+export interface ParsedDeadlineDto {
+  title: string;
+  category: DeadlineCategory;
+  due_at: string;
+  leverage_class: LeverageClass;
+  notes: string | null;
+}
+
+/** `icsContent` is the raw `.ics` file text, already read client-side via the File API. Nothing is written to disk here — the caller stages the returned rows into the wizard's Deadlines step. */
+export async function importCalendarIcs(icsContent: string): Promise<ParsedDeadlineDto[]> {
+  return invoke<ParsedDeadlineDto[]>("import_calendar_ics", { icsContent });
+}
+
+export interface CsvRowDto {
+  cells: Record<string, string>;
+}
+
+/** Parses only — the person still chooses which column means what before anything is staged. */
+export async function previewCsvImport(csvContent: string): Promise<CsvRowDto[]> {
+  return invoke<CsvRowDto[]>("preview_csv_import", { csvContent });
+}
+
+export interface CandidateAchievementDto {
+  kind: "project" | "publication" | "certification";
+  title: string;
+  source_excerpt: string;
+}
+
+/** `pdfBase64` is the file's raw bytes, base64-encoded client-side (strip any `data:...;base64,` prefix first). Extraction only — nothing is written until the person confirms which candidates to keep and the caller stages them into the wizard's Deadlines step. */
+export async function previewPdfImport(pdfBase64: string): Promise<CandidateAchievementDto[]> {
+  return invoke<CandidateAchievementDto[]>("preview_pdf_import", { pdfBase64 });
+}

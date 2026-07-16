@@ -47,6 +47,22 @@ athena-events = { path = "../athena-events" }
 athena-reasoning = { path = "../athena-reasoning" }
 athena-ingestion = { path = "../athena-ingestion" }
 
+# 07_INTEGRATIONS.md §4: GitHub's personal access token is "stored
+# exclusively in the OS-native keychain... never in SQLite, never in a
+# plaintext config file, never logged." `keyring` is the standard
+# cross-platform crate for exactly this (Keychain on macOS, Credential
+# Manager on Windows, Secret Service on Linux) — the same three
+# backends §4 names — called only from athena-app's command layer, the
+# one crate allowed device-integration dependencies like `tauri` itself.
+keyring = "2"
+
+# Tokio is already pulled in transitively by `tauri`'s async runtime;
+# named explicitly here only so `commands::integrations`'s scheduler can
+# spawn a background interval task with an unambiguous, pinned API
+# (Implementation Plan §1, "pin exact minor version... upgrade
+# deliberately").
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+
 # Needed to name the `rusqlite::Connection` type held in Tauri-managed
 # state (`app.manage(Mutex::new(conn))` in main.rs) so the onboarding
 # commands can declare `State<'_, Mutex<Connection>>`. Same pinned

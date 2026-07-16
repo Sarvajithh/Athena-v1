@@ -65,12 +65,14 @@ mod tests {
             .expect("query refinery_schema_history");
         assert_eq!(
             applied,
-            3,
-            "exactly 3 migrations should be recorded as applied"
+            4,
+            "exactly 4 migrations should be recorded as applied"
         );
 
-        // MT-6 / Acceptance Criterion #4 (Objective 4): no domain table
-        // exists — only the migration bookkeeping table.
+        // MT-6 / Acceptance Criterion #4 (Objective 4, extended by V4's
+        // integrations schema): no unexpected domain table exists —
+        // only the migration bookkeeping table and the tables V2-V4
+        // actually create (7 + 1 + 5 = 13).
         let domain_tables: i64 = conn2
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master \
@@ -82,7 +84,7 @@ mod tests {
             .expect("query sqlite_master");
         assert_eq!(
             domain_tables,
-            8,
+            13,
             "all expected domain tables should exist after migrations"
         );
     }

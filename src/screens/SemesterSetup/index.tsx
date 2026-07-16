@@ -17,6 +17,7 @@ import {
 } from '../../ipc/bindings';
 import type { SemesterPhase, WizardStep } from '../../mock/types';
 import { useBootstrap } from '../../state/bootstrapContext';
+import { ConnectorsStep, type StagedDeadline } from './ConnectorsStep';
 import { PhaseStrip } from './PhaseStrip';
 import styles from './SemesterSetup.module.css';
 import { WizardStepShell } from './WizardStepShell';
@@ -82,7 +83,7 @@ interface SemesterSetupProps {
   onComplete?: () => void | Promise<void>;
 }
 
-const STEP_LABELS = ['Basics', 'Courses', 'Deadlines', 'Deep-work window', 'Review & start'];
+const STEP_LABELS = ['Basics', 'Courses', 'Deadlines', 'Deep-work window', 'Connectors', 'Review & start'];
 const LEVERAGE_OPTIONS: LeverageClass[] = ['high', 'medium', 'low'];
 const CATEGORY_OPTIONS: DeadlineCategory[] = ['academic', 'career', 'research', 'dsa', 'other'];
 
@@ -148,6 +149,29 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
 
   const nonEmptyCourses = courses.filter((c) => c.code.trim() || c.title.trim());
   const nonEmptyDeadlines = deadlines.filter((d) => d.title.trim());
+
+  /**
+   * Every import connector (Calendar/.ics, PDF, CSV — 07_INTEGRATIONS.md
+   * §1.4/§1.5/§1.6) funnels here: rows land in the exact same `deadlines`
+   * state the Deadlines step already edits by hand, so a connector-
+   * sourced row is reviewable/editable/removable identically to a
+   * manually typed one, and is committed the one existing way.
+   */
+  const handleStageDeadlines = (rows: StagedDeadline[]) => {
+    if (rows.length === 0) return;
+    setDeadlines((existing) => {
+      const withoutBlankSeed = existing.filter((d) => d.title.trim());
+      const staged: DeadlineRowState[] = rows.map((r) => ({
+        title: r.title,
+        category: r.category,
+        dueAt: r.dueAt,
+        leverageClass: r.leverageClass,
+        notes: r.notes,
+        courseIndex: '',
+      }));
+      return [...withoutBlankSeed, ...staged];
+    });
+  };
 
   const canAdvanceFromStep = (index: number): boolean => {
     switch (index) {
@@ -525,7 +549,9 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
           </div>
         )}
 
-        {step === 4 && (
+        {step === 4 && <ConnectorsStep styles={styles} onStageDeadlines={handleStageDeadlines} />}
+
+        {step === 5 && (
           <div className={styles.form}>
             <p className="type-body">
               <strong>{label || 'Untitled semester'}</strong> · {startsOn || '—'} to {endsOn || '—'}

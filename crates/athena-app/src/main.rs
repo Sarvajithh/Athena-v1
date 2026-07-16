@@ -3,6 +3,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod keychain;
+mod scheduler;
 
 use std::path::PathBuf;
 
@@ -63,6 +65,21 @@ fn main() {
             commands::onboarding::commit_semester_setup,
             commands::planner::log_disruption,
             commands::planner::list_recent_disruptions,
+            commands::integrations::list_data_sources,
+            commands::integrations::sync_codeforces,
+            commands::integrations::get_latest_codeforces_snapshot,
+            commands::integrations::sync_leetcode,
+            commands::integrations::get_latest_leetcode_snapshot,
+            commands::integrations::save_github_token,
+            commands::integrations::delete_github_token,
+            commands::integrations::link_github_repo,
+            commands::integrations::unlink_github_repo,
+            commands::integrations::list_linked_github_repos,
+            commands::integrations::sync_github,
+            commands::integrations::list_project_status_snapshots,
+            commands::integrations::import_calendar_ics,
+            commands::integrations::preview_csv_import,
+            commands::integrations::preview_pdf_import,
         ])
         .setup(|app| {
             let paths = resolve_app_paths(app.handle())?;
@@ -89,6 +106,14 @@ fn main() {
                     return Err(Box::new(e));
                 }
             }
+
+            // 07_INTEGRATIONS.md: "never block startup waiting for
+            // integrations." `setup` returns `Ok(())` immediately after
+            // this call — `scheduler::spawn` only schedules a background
+            // async task, it does not await one. The window opens
+            // whether or not Codeforces/LeetCode/GitHub are reachable
+            // right now, or ever.
+            scheduler::spawn(app.handle().clone());
 
             Ok(())
         });

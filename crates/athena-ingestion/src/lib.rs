@@ -6,5 +6,5 @@
 //! yet (SPRINT1_SPEC.md §1, explicitly out of scope for this sprint).
 
 pub mod error;
-
+pub mod connectors;
 pub use error::IngestionError;
