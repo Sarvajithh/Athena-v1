@@ -15,6 +15,9 @@ pub enum IngestionError {
     /// Missing API key, token, or other required configuration.
     NotConfigured(String),
 
+    /// OAuth/access token is invalid, expired, or revoked.
+    AuthExpired(String),
+
     /// Remote service rejected requests due to rate limiting.
     RateLimited(String),
 }
@@ -33,6 +36,9 @@ impl fmt::Display for IngestionError {
             }
             IngestionError::NotConfigured(msg) => {
                 write!(f, "not configured: {}", msg)
+            }
+            IngestionError::AuthExpired(msg) => {
+                write!(f, "authentication expired: {}", msg)
             }
             IngestionError::RateLimited(msg) => {
                 write!(f, "rate limited: {}", msg)

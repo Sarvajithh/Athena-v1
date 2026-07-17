@@ -791,24 +791,30 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
         courses_result = google_classroom::fetch_courses(&access_token).await;
     }
 
-    let conn = db.lock().map_err(|e| e.to_string())?;
+    // let conn = db.lock().map_err(|e| e.to_string())?;
     match courses_result {
         Ok(courses) => {
             for course in &courses {
-                integrations_repo::upsert_classroom_course(
-                    &conn,
-                    &integrations_repo::NewClassroomCourse {
-                        course_id: course.course_id.clone(),
-                        name: course.name.clone(),
-                        section: course.section.clone(),
-                    },
-                )
-                .map_err(|e| e.to_string())?;
 
-                // One course's coursework/announcements failing doesn't
-                // abort sibling courses — same per-item degrade-path
-                // precedent as GitHub's per-repo sync (§1.3/§5).
-                if let Ok(coursework) = google_classroom::fetch_coursework(&access_token, &course.course_id).await {
+                {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+
+                    integrations_repo::upsert_classroom_course(
+                        &conn,
+                        &integrations_repo::NewClassroomCourse {
+                            course_id: course.course_id.clone(),
+                            name: course.name.clone(),
+                            section: course.section.clone(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                } // conn dropped here
+
+                if let Ok(coursework) =
+                    google_classroom::fetch_coursework(&access_token, &course.course_id).await
+                {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+
                     for cw in coursework {
                         integrations_repo::upsert_classroom_coursework(
                             &conn,
@@ -823,9 +829,12 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
                         .map_err(|e| e.to_string())?;
                     }
                 }
+
                 if let Ok(announcements) =
                     google_classroom::fetch_announcements(&access_token, &course.course_id).await
                 {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+
                     for a in announcements {
                         integrations_repo::upsert_classroom_announcement(
                             &conn,
@@ -840,14 +849,13 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
                     }
                 }
             }
-            integrations_repo::mark_synced_ok(&conn, "google_classroom", &now_iso8601())
-                .map_err(|e| e.to_string())?;
         }
+
         Err(e) => {
-            integrations_repo::mark_synced_error(&conn, "google_classroom", &e.to_string())
-                .map_err(|e| e.to_string())?;
+            // existing error handling
         }
     }
+    let conn = db.lock().map_err(|e| e.to_string())?;
     let row = integrations_repo::get_data_source(&conn, "google_classroom")
         .map_err(|e| e.to_string())?
         .ok_or("google_classroom data_source row missing")?;

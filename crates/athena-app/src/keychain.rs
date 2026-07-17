@@ -109,7 +109,7 @@ pub fn delete_oauth_tokens(provider: &str) -> Result<(), String> {
         Err(e) => Err(e.to_string()),
     }
 }
-pub mod oauth_loopback;
+
 
 /// Whether an OAuth provider currently has a stored token set — the
 /// OAuth-connector equivalent of `has_github_token`, used the same way
