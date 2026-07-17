@@ -269,13 +269,16 @@ export type SourceKey =
   | "calendar_ics"
   | "pdf_import"
   | "csv_import"
-  | "manual";
+  | "manual"
+  | "gmail"
+  | "google_classroom"
+  | "notion";
 
 export type SyncStatus = "disconnected" | "idle" | "syncing" | "ok" | "error";
 
 export interface DataSourceDto {
   source_key: SourceKey;
-  kind: "poll" | "import" | "always_on";
+  kind: "poll" | "import" | "always_on" | "oauth_poll";
   status: SyncStatus;
   last_synced_at: string | null;
   last_error: string | null;
@@ -371,6 +374,108 @@ export async function syncGithub(): Promise<DataSourceDto> {
 
 export async function listProjectStatusSnapshots(): Promise<ProjectStatusSnapshotDto[]> {
   return invoke<ProjectStatusSnapshotDto[]>("list_project_status_snapshots");
+}
+
+// --- Gmail (§1.8, OAuth amendment) ---
+//
+// `start*Oauth` opens the system browser, waits for the user to
+// complete consent, exchanges the code, stores tokens in the OS
+// keychain, and runs the first sync — one round trip, same
+// "save + sync immediately" precedent as `syncCodeforces`. Never
+// throws on a failed sync; read `status`/`last_error` off the result.
+
+/** Opens the browser for Gmail consent and runs the first sync once granted. */
+export async function startGmailOauth(): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("start_gmail_oauth");
+}
+
+export async function disconnectGmail(): Promise<void> {
+  return invoke<void>("disconnect_gmail");
+}
+
+export interface GmailMessageDto {
+  message_id: string;
+  thread_id: string | null;
+  sender: string | null;
+  subject: string | null;
+  received_at: string | null;
+  snippet: string | null;
+  fetched_at: string;
+}
+
+export async function listGmailMessages(): Promise<GmailMessageDto[]> {
+  return invoke<GmailMessageDto[]>("list_gmail_messages");
+}
+
+// --- Google Classroom (§1.9, OAuth amendment) ---
+
+/** Opens the browser for Classroom consent and runs the first sync once granted. */
+export async function startGoogleClassroomOauth(): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("start_google_classroom_oauth");
+}
+
+export async function disconnectGoogleClassroom(): Promise<void> {
+  return invoke<void>("disconnect_google_classroom");
+}
+
+export interface ClassroomCourseDto {
+  course_id: string;
+  name: string;
+  section: string | null;
+  fetched_at: string;
+}
+
+export async function listClassroomCourses(): Promise<ClassroomCourseDto[]> {
+  return invoke<ClassroomCourseDto[]>("list_classroom_courses");
+}
+
+export interface ClassroomCourseworkDto {
+  coursework_id: string;
+  course_id: string;
+  title: string;
+  due_at: string | null;
+  state: string | null;
+  fetched_at: string;
+}
+
+export async function listClassroomCoursework(): Promise<ClassroomCourseworkDto[]> {
+  return invoke<ClassroomCourseworkDto[]>("list_classroom_coursework");
+}
+
+export interface ClassroomAnnouncementDto {
+  announcement_id: string;
+  course_id: string;
+  text: string | null;
+  posted_at: string | null;
+  fetched_at: string;
+}
+
+export async function listClassroomAnnouncements(): Promise<ClassroomAnnouncementDto[]> {
+  return invoke<ClassroomAnnouncementDto[]>("list_classroom_announcements");
+}
+
+// --- Notion (§1.10, OAuth amendment) ---
+
+/** Opens the browser for Notion consent and runs the first sync once granted. */
+export async function startNotionOauth(): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("start_notion_oauth");
+}
+
+export async function disconnectNotion(): Promise<void> {
+  return invoke<void>("disconnect_notion");
+}
+
+export interface NotionPageDto {
+  page_id: string;
+  title: string | null;
+  url: string | null;
+  parent_database_id: string | null;
+  last_edited_at: string | null;
+  fetched_at: string;
+}
+
+export async function listNotionPages(): Promise<NotionPageDto[]> {
+  return invoke<NotionPageDto[]>("list_notion_pages");
 }
 
 // --- Calendar Import (§1.4), CSV Import (§1.6), PDF Import (§1.5) ---

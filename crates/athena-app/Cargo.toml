@@ -60,8 +60,10 @@ keyring = "2"
 # named explicitly here only so `commands::integrations`'s scheduler can
 # spawn a background interval task with an unambiguous, pinned API
 # (Implementation Plan §1, "pin exact minor version... upgrade
-# deliberately").
-tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+# deliberately"). `net`/`io-util` added for the OAuth amendment
+# (07_INTEGRATIONS.md §1.8-§1.10): `oauth_loopback.rs`'s localhost
+# redirect listener needs `TcpListener` plus `AsyncRead`/`AsyncWrite`.
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "net", "io-util"] }
 
 # Needed to name the `rusqlite::Connection` type held in Tauri-managed
 # state (`app.manage(Mutex::new(conn))` in main.rs) so the onboarding

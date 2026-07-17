@@ -14,12 +14,16 @@
 use std::sync::Mutex;
 
 use athena_data::repositories::integrations as integrations_repo;
-use athena_ingestion::connectors::{calendar_ics, codeforces, csv_import, github, leetcode, pdf_import};
+use athena_ingestion::connectors::{
+    calendar_ics, codeforces, csv_import, github, gmail, google_classroom, leetcode, notion, oauth2, pdf_import,
+};
+use athena_ingestion::IngestionError;
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
 
 use crate::keychain;
+use crate::oauth_loopback::LoopbackListener;
 
 fn now_iso8601() -> String {
     // Matches the exact format SQLite's own `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
@@ -78,7 +82,11 @@ pub struct DataSourceDto {
 }
 
 fn to_dto(row: athena_data::repositories::integrations::DataSourceRow) -> DataSourceDto {
-    let has_credential = row.source_key == "github" && keychain::has_github_token();
+    let has_credential = match row.source_key.as_str() {
+        "github" => keychain::has_github_token(),
+        "gmail" | "google_classroom" | "notion" => keychain::has_oauth_tokens(&row.source_key),
+        _ => false,
+    };
     DataSourceDto {
         source_key: row.source_key,
         kind: row.kind,
@@ -414,6 +422,650 @@ pub fn list_project_status_snapshots(
             open_pr_count: r.open_pr_count,
             open_issue_count: r.open_issue_count,
             last_commit_at: r.last_commit_at,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+// ---------------------------------------------------------------------
+// Gmail (§1.8) / Google Classroom (§1.9) / Notion (§1.10) —
+// 2026-07-17 OAuth amendment. Shared plumbing first, then each
+// connector's `start_*_oauth` (connect), `disconnect_*`, `run_*_sync`
+// (scheduler + IPC entry point), and `list_*` commands.
+// ---------------------------------------------------------------------
+
+/// How long a `start_*_oauth` command waits for the user to finish the
+/// browser consent screen before giving up — generous enough for a
+/// real human to read a consent screen, short enough that an abandoned
+/// flow doesn't leak a listening port indefinitely.
+const OAUTH_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Reads the shared Google OAuth client credentials from the
+/// environment — never hardcoded, never committed (Implementation
+/// Plan's general secrets discipline extended to this amendment).
+/// `client_secret` is optional: Google's PKCE-covered installed-app flow
+/// works without one, but many registered "Desktop app" client types
+/// still issue one, so it's included when present.
+fn google_client_id() -> Result<String, String> {
+    std::env::var("ATHENA_GOOGLE_OAUTH_CLIENT_ID").map_err(|_| {
+        "Gmail/Google Classroom aren't configured yet — set ATHENA_GOOGLE_OAUTH_CLIENT_ID \
+         (and optionally ATHENA_GOOGLE_OAUTH_CLIENT_SECRET) before connecting."
+            .to_string()
+    })
+}
+fn google_client_secret() -> Option<String> {
+    std::env::var("ATHENA_GOOGLE_OAUTH_CLIENT_SECRET").ok()
+}
+fn notion_client_id() -> Result<String, String> {
+    std::env::var("ATHENA_NOTION_OAUTH_CLIENT_ID")
+        .map_err(|_| "Notion isn't configured yet — set ATHENA_NOTION_OAUTH_CLIENT_ID and \
+                       ATHENA_NOTION_OAUTH_CLIENT_SECRET before connecting."
+            .to_string())
+}
+fn notion_client_secret() -> Result<String, String> {
+    std::env::var("ATHENA_NOTION_OAUTH_CLIENT_SECRET")
+        .map_err(|_| "Notion isn't configured yet — set ATHENA_NOTION_OAUTH_CLIENT_SECRET.".to_string())
+}
+
+/// A whole-seconds ISO-8601 instant from a Unix timestamp — reuses
+/// `chrono_like_iso_date`'s civil-calendar math (this file's own
+/// helper, same reasoning as `github.rs`'s hand-rolled date formatting)
+/// for OAuth token-expiry bookkeeping.
+fn iso8601_from_unix_secs(total_secs: u64) -> String {
+    format!("{}Z", chrono_like_iso_date(total_secs))
+}
+
+/// The stored access token for `source_key`, if any — `None` means
+/// "never connected" or "disconnected," the connector's normal resting
+/// state, not an error.
+fn get_stored_access_token(source_key: &str) -> Result<Option<String>, String> {
+    Ok(keychain::get_oauth_tokens(source_key)?.map(|t| t.access_token))
+}
+
+/// The token endpoint + client credentials + auth style for one OAuth
+/// source key — the one place this file knows Google and Notion
+/// authenticate differently at their token endpoints (§1.8-§1.10).
+struct OAuthEndpointConfig {
+    token_url: &'static str,
+    client_id: String,
+    client_secret: Option<String>,
+    auth_style: oauth2::ClientAuthStyle,
+    body_encoding: oauth2::BodyEncoding,
+}
+
+fn oauth_endpoint_for(source_key: &str) -> Result<OAuthEndpointConfig, String> {
+    match source_key {
+        "gmail" | "google_classroom" => Ok(OAuthEndpointConfig {
+            token_url: gmail::TOKEN_URL,
+            client_id: google_client_id()?,
+            client_secret: google_client_secret(),
+            auth_style: oauth2::ClientAuthStyle::BodyParams,
+            body_encoding: oauth2::BodyEncoding::Form,
+        }),
+        "notion" => Ok(OAuthEndpointConfig {
+            token_url: notion::TOKEN_URL,
+            client_id: notion_client_id()?,
+            client_secret: Some(notion_client_secret()?),
+            auth_style: oauth2::ClientAuthStyle::BasicHeader,
+            body_encoding: oauth2::BodyEncoding::Json,
+        }),
+        _ => Err(format!("unknown oauth source: {source_key}")),
+    }
+}
+
+/// Refreshes `source_key`'s access token using its stored refresh
+/// token, persists the new token set, and returns the new access token.
+/// Notion tokens don't expire and carry no refresh token (§1.10) — a
+/// rejected Notion token means the user revoked the connection on
+/// Notion's side, so this returns an actionable error rather than
+/// attempting a refresh that Notion's API doesn't support.
+async fn refresh_oauth_token(source_key: &str) -> Result<String, String> {
+    if source_key == "notion" {
+        return Err(
+            "notion: access tokens don't expire — a rejected token means the connection was \
+             revoked on Notion's side; reconnect Notion to continue syncing."
+                .to_string(),
+        );
+    }
+
+    let stored = keychain::get_oauth_tokens(source_key)?
+        .ok_or_else(|| format!("{source_key}: no stored tokens to refresh"))?;
+    let refresh_token = stored
+        .refresh_token
+        .clone()
+        .ok_or_else(|| format!("{source_key}: no refresh token on file — reconnect to continue syncing"))?;
+
+    let endpoint = oauth_endpoint_for(source_key)?;
+    let refreshed = oauth2::refresh_access_token(oauth2::RefreshRequest {
+        token_url: endpoint.token_url,
+        client_id: &endpoint.client_id,
+        client_secret: endpoint.client_secret.as_deref(),
+        refresh_token: &refresh_token,
+        auth_style: endpoint.auth_style,
+        body_encoding: endpoint.body_encoding,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let expires_at = refreshed.expires_in_secs.map(|secs| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        iso8601_from_unix_secs(now + secs.max(0) as u64)
+    });
+    let new_tokens = keychain::StoredOAuthTokens {
+        access_token: refreshed.access_token.clone(),
+        // Some providers omit `refresh_token` on a refresh response
+        // (the old one stays valid) — keep the existing one in that case.
+        refresh_token: refreshed.refresh_token.or(Some(refresh_token)),
+        expires_at,
+    };
+    keychain::save_oauth_tokens(source_key, &new_tokens)?;
+    Ok(new_tokens.access_token)
+}
+
+/// Persists a freshly obtained token set and marks the source `idle`
+/// (reachable, not yet synced) — the shared tail end of every
+/// `start_*_oauth` command, right before that command runs the
+/// connector's first sync.
+fn persist_oauth_tokens(
+    db: &Mutex<Connection>,
+    source_key: &str,
+    tokens: &oauth2::OAuthTokenSet,
+) -> Result<(), String> {
+    let expires_at = tokens.expires_in_secs.map(|secs| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        iso8601_from_unix_secs(now + secs.max(0) as u64)
+    });
+    keychain::save_oauth_tokens(
+        source_key,
+        &keychain::StoredOAuthTokens {
+            access_token: tokens.access_token.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            expires_at,
+        },
+    )?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    integrations_repo::set_data_source_config(&conn, source_key, "{}").map_err(|e| e.to_string())
+}
+
+fn disconnect_oauth_source(db: &Mutex<Connection>, source_key: &str) -> Result<(), String> {
+    keychain::delete_oauth_tokens(source_key)?;
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    integrations_repo::mark_disconnected(&conn, source_key).map_err(|e| e.to_string())
+}
+
+// --- Gmail (§1.8) ---
+
+/// Runs the full OAuth connect flow (open browser, wait for the
+/// loopback redirect, exchange the code, store tokens) and then runs
+/// Gmail's first sync immediately, same "save + sync in one round trip"
+/// precedent as `sync_codeforces`. Never blocks app startup — this is
+/// only ever invoked by an explicit user action in the Connectors step.
+#[tauri::command]
+pub async fn start_gmail_oauth(db: State<'_, Mutex<Connection>>) -> Result<DataSourceDto, String> {
+    run_google_oauth_connect(&db, "gmail", gmail::SCOPE).await?;
+    run_gmail_sync(&db).await
+}
+
+#[tauri::command]
+pub fn disconnect_gmail(db: State<'_, Mutex<Connection>>) -> Result<(), String> {
+    disconnect_oauth_source(&db, "gmail")
+}
+
+/// Shared connect flow for both Google-backed connectors (§1.9's own
+/// text: "shares the same Google OAuth client and token endpoint as
+/// §1.8") — only the requested `scope` and the `data_sources` row
+/// updated differ between Gmail and Classroom.
+async fn run_google_oauth_connect(db: &Mutex<Connection>, source_key: &str, scope: &str) -> Result<(), String> {
+    let client_id = google_client_id()?;
+    let client_secret = google_client_secret();
+
+    let listener = LoopbackListener::bind().await?;
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", listener.port);
+    let pkce = oauth2::generate_pkce_pair();
+    let state = oauth2::generate_state();
+
+    let authorize_url = oauth2::build_authorize_url(
+        gmail::AUTHORIZE_URL,
+        &[
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("response_type", "code"),
+            ("scope", scope),
+            ("access_type", "offline"),
+            ("prompt", "consent"),
+            ("code_challenge", pkce.challenge.as_str()),
+            ("code_challenge_method", "S256"),
+            ("state", state.as_str()),
+        ],
+    );
+    crate::oauth_loopback::open_in_browser(&authorize_url)?;
+
+    let (code, returned_state) = listener.wait_for_code(OAUTH_CALLBACK_TIMEOUT).await?;
+    if returned_state != state {
+        return Err("oauth state mismatch — possible CSRF, aborting connect".to_string());
+    }
+
+    let tokens = oauth2::exchange_code_for_tokens(oauth2::AuthCodeExchangeRequest {
+        token_url: gmail::TOKEN_URL,
+        client_id: &client_id,
+        client_secret: client_secret.as_deref(),
+        code: &code,
+        redirect_uri: &redirect_uri,
+        code_verifier: Some(&pkce.verifier),
+        auth_style: oauth2::ClientAuthStyle::BodyParams,
+        body_encoding: oauth2::BodyEncoding::Form,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    persist_oauth_tokens(db, source_key, &tokens)
+}
+
+/// See `run_codeforces_sync`'s doc comment — same reasoning, for the
+/// scheduler's Gmail tick and `start_gmail_oauth`'s immediate first sync.
+pub async fn run_gmail_sync(db: &Mutex<Connection>) -> Result<DataSourceDto, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_syncing(&conn, "gmail").map_err(|e| e.to_string())?;
+    }
+
+    let Some(mut access_token) = get_stored_access_token("gmail")? else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(&conn, "gmail", "not connected — connect Gmail first")
+            .map_err(|e| e.to_string())?;
+        let row = integrations_repo::get_data_source(&conn, "gmail")
+            .map_err(|e| e.to_string())?
+            .ok_or("gmail data_source row missing")?;
+        return Ok(to_dto(row));
+    };
+
+    let mut result = gmail::fetch_inbox_metadata(&access_token).await;
+    if let Err(IngestionError::AuthExpired(_)) = &result {
+        access_token = refresh_oauth_token("gmail").await?;
+        result = gmail::fetch_inbox_metadata(&access_token).await;
+    }
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    match result {
+        Ok(messages) => {
+            for m in &messages {
+                integrations_repo::upsert_gmail_message_snapshot(
+                    &conn,
+                    &integrations_repo::NewGmailMessageSnapshot {
+                        message_id: m.message_id.clone(),
+                        thread_id: m.thread_id.clone(),
+                        sender: m.sender.clone(),
+                        subject: m.subject.clone(),
+                        received_at: m.received_at.clone(),
+                        snippet: m.snippet.clone(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            integrations_repo::mark_synced_ok(&conn, "gmail", &now_iso8601()).map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            integrations_repo::mark_synced_error(&conn, "gmail", &e.to_string()).map_err(|e| e.to_string())?;
+        }
+    }
+    let row = integrations_repo::get_data_source(&conn, "gmail")
+        .map_err(|e| e.to_string())?
+        .ok_or("gmail data_source row missing")?;
+    Ok(to_dto(row))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GmailMessageDto {
+    pub message_id: String,
+    pub thread_id: Option<String>,
+    pub sender: Option<String>,
+    pub subject: Option<String>,
+    pub received_at: Option<String>,
+    pub snippet: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_gmail_messages(db: State<'_, Mutex<Connection>>) -> Result<Vec<GmailMessageDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_gmail_message_snapshots(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| GmailMessageDto {
+            message_id: r.message_id,
+            thread_id: r.thread_id,
+            sender: r.sender,
+            subject: r.subject,
+            received_at: r.received_at,
+            snippet: r.snippet,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+// --- Google Classroom (§1.9) ---
+
+#[tauri::command]
+pub async fn start_google_classroom_oauth(db: State<'_, Mutex<Connection>>) -> Result<DataSourceDto, String> {
+    run_google_oauth_connect(&db, "google_classroom", google_classroom::SCOPE).await?;
+    run_google_classroom_sync(&db).await
+}
+
+#[tauri::command]
+pub fn disconnect_google_classroom(db: State<'_, Mutex<Connection>>) -> Result<(), String> {
+    disconnect_oauth_source(&db, "google_classroom")
+}
+
+/// See `run_codeforces_sync`'s doc comment — same reasoning, for the
+/// scheduler's Classroom tick and `start_google_classroom_oauth`'s
+/// immediate first sync.
+pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSourceDto, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_syncing(&conn, "google_classroom").map_err(|e| e.to_string())?;
+    }
+
+    let Some(mut access_token) = get_stored_access_token("google_classroom")? else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(
+            &conn,
+            "google_classroom",
+            "not connected — connect Google Classroom first",
+        )
+        .map_err(|e| e.to_string())?;
+        let row = integrations_repo::get_data_source(&conn, "google_classroom")
+            .map_err(|e| e.to_string())?
+            .ok_or("google_classroom data_source row missing")?;
+        return Ok(to_dto(row));
+    };
+
+    let mut courses_result = google_classroom::fetch_courses(&access_token).await;
+    if let Err(IngestionError::AuthExpired(_)) = &courses_result {
+        access_token = refresh_oauth_token("google_classroom").await?;
+        courses_result = google_classroom::fetch_courses(&access_token).await;
+    }
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    match courses_result {
+        Ok(courses) => {
+            for course in &courses {
+                integrations_repo::upsert_classroom_course(
+                    &conn,
+                    &integrations_repo::NewClassroomCourse {
+                        course_id: course.course_id.clone(),
+                        name: course.name.clone(),
+                        section: course.section.clone(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+
+                // One course's coursework/announcements failing doesn't
+                // abort sibling courses — same per-item degrade-path
+                // precedent as GitHub's per-repo sync (§1.3/§5).
+                if let Ok(coursework) = google_classroom::fetch_coursework(&access_token, &course.course_id).await {
+                    for cw in coursework {
+                        integrations_repo::upsert_classroom_coursework(
+                            &conn,
+                            &integrations_repo::NewClassroomCoursework {
+                                course_id: cw.course_id,
+                                coursework_id: cw.coursework_id,
+                                title: cw.title,
+                                due_at: cw.due_at,
+                                state: cw.state,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+                if let Ok(announcements) =
+                    google_classroom::fetch_announcements(&access_token, &course.course_id).await
+                {
+                    for a in announcements {
+                        integrations_repo::upsert_classroom_announcement(
+                            &conn,
+                            &integrations_repo::NewClassroomAnnouncement {
+                                course_id: a.course_id,
+                                announcement_id: a.announcement_id,
+                                text: a.text,
+                                posted_at: a.posted_at,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            integrations_repo::mark_synced_ok(&conn, "google_classroom", &now_iso8601())
+                .map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            integrations_repo::mark_synced_error(&conn, "google_classroom", &e.to_string())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let row = integrations_repo::get_data_source(&conn, "google_classroom")
+        .map_err(|e| e.to_string())?
+        .ok_or("google_classroom data_source row missing")?;
+    Ok(to_dto(row))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassroomCourseDto {
+    pub course_id: String,
+    pub name: String,
+    pub section: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_classroom_courses(db: State<'_, Mutex<Connection>>) -> Result<Vec<ClassroomCourseDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_classroom_courses(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ClassroomCourseDto {
+            course_id: r.course_id,
+            name: r.name,
+            section: r.section,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassroomCourseworkDto {
+    pub coursework_id: String,
+    pub course_id: String,
+    pub title: String,
+    pub due_at: Option<String>,
+    pub state: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_classroom_coursework(db: State<'_, Mutex<Connection>>) -> Result<Vec<ClassroomCourseworkDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_classroom_coursework(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ClassroomCourseworkDto {
+            coursework_id: r.coursework_id,
+            course_id: r.course_id,
+            title: r.title,
+            due_at: r.due_at,
+            state: r.state,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassroomAnnouncementDto {
+    pub announcement_id: String,
+    pub course_id: String,
+    pub text: Option<String>,
+    pub posted_at: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_classroom_announcements(
+    db: State<'_, Mutex<Connection>>,
+) -> Result<Vec<ClassroomAnnouncementDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_classroom_announcements(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ClassroomAnnouncementDto {
+            announcement_id: r.announcement_id,
+            course_id: r.course_id,
+            text: r.text,
+            posted_at: r.posted_at,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+// --- Notion (§1.10) ---
+
+#[tauri::command]
+pub async fn start_notion_oauth(db: State<'_, Mutex<Connection>>) -> Result<DataSourceDto, String> {
+    let client_id = notion_client_id()?;
+    let client_secret = notion_client_secret()?;
+
+    let listener = LoopbackListener::bind().await?;
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", listener.port);
+    let state = oauth2::generate_state();
+
+    // Notion has no PKCE support and no `scope` param — capabilities are
+    // fixed to "read content" when the integration itself is registered
+    // (§1.10).
+    let authorize_url = oauth2::build_authorize_url(
+        notion::AUTHORIZE_URL,
+        &[
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("response_type", "code"),
+            ("owner", "user"),
+            ("state", state.as_str()),
+        ],
+    );
+    crate::oauth_loopback::open_in_browser(&authorize_url)?;
+
+    let (code, returned_state) = listener.wait_for_code(OAUTH_CALLBACK_TIMEOUT).await?;
+    if returned_state != state {
+        return Err("oauth state mismatch — possible CSRF, aborting connect".to_string());
+    }
+
+    let tokens = oauth2::exchange_code_for_tokens(oauth2::AuthCodeExchangeRequest {
+        token_url: notion::TOKEN_URL,
+        client_id: &client_id,
+        client_secret: Some(&client_secret),
+        code: &code,
+        redirect_uri: &redirect_uri,
+        code_verifier: None,
+        auth_style: oauth2::ClientAuthStyle::BasicHeader,
+        body_encoding: oauth2::BodyEncoding::Json,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    persist_oauth_tokens(&db, "notion", &tokens)?;
+    run_notion_sync(&db).await
+}
+
+#[tauri::command]
+pub fn disconnect_notion(db: State<'_, Mutex<Connection>>) -> Result<(), String> {
+    disconnect_oauth_source(&db, "notion")
+}
+
+/// See `run_codeforces_sync`'s doc comment — same reasoning, for the
+/// scheduler's Notion tick and `start_notion_oauth`'s immediate first sync.
+pub async fn run_notion_sync(db: &Mutex<Connection>) -> Result<DataSourceDto, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_syncing(&conn, "notion").map_err(|e| e.to_string())?;
+    }
+
+    let Some(access_token) = get_stored_access_token("notion")? else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(&conn, "notion", "not connected — connect Notion first")
+            .map_err(|e| e.to_string())?;
+        let row = integrations_repo::get_data_source(&conn, "notion")
+            .map_err(|e| e.to_string())?
+            .ok_or("notion data_source row missing")?;
+        return Ok(to_dto(row));
+    };
+
+    // No refresh attempt on `AuthExpired` here — Notion tokens carry no
+    // refresh token (§1.10); `refresh_oauth_token` would just return its
+    // own explanatory error, so a Notion `AuthExpired` goes straight to
+    // `mark_synced_error` with that same actionable message.
+    let result = notion::fetch_pages(&access_token).await;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    match result {
+        Ok(pages) => {
+            for p in &pages {
+                integrations_repo::upsert_notion_page(
+                    &conn,
+                    &integrations_repo::NewNotionPage {
+                        page_id: p.page_id.clone(),
+                        title: p.title.clone(),
+                        url: p.url.clone(),
+                        parent_database_id: p.parent_database_id.clone(),
+                        last_edited_at: p.last_edited_at.clone(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            integrations_repo::mark_synced_ok(&conn, "notion", &now_iso8601()).map_err(|e| e.to_string())?;
+        }
+        Err(IngestionError::AuthExpired(_)) => {
+            integrations_repo::mark_synced_error(
+                &conn,
+                "notion",
+                "notion access was revoked or expired — reconnect Notion to continue syncing",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            integrations_repo::mark_synced_error(&conn, "notion", &e.to_string()).map_err(|e| e.to_string())?;
+        }
+    }
+    let row = integrations_repo::get_data_source(&conn, "notion")
+        .map_err(|e| e.to_string())?
+        .ok_or("notion data_source row missing")?;
+    Ok(to_dto(row))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotionPageDto {
+    pub page_id: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub parent_database_id: Option<String>,
+    pub last_edited_at: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_notion_pages(db: State<'_, Mutex<Connection>>) -> Result<Vec<NotionPageDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_notion_pages(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| NotionPageDto {
+            page_id: r.page_id,
+            title: r.title,
+            url: r.url,
+            parent_database_id: r.parent_database_id,
+            last_edited_at: r.last_edited_at,
             fetched_at: r.fetched_at,
         })
         .collect())

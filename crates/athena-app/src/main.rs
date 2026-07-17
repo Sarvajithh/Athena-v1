@@ -4,6 +4,7 @@
 
 mod commands;
 mod keychain;
+mod oauth_loopback;
 mod scheduler;
 
 use std::path::PathBuf;
@@ -80,6 +81,17 @@ fn main() {
             commands::integrations::import_calendar_ics,
             commands::integrations::preview_csv_import,
             commands::integrations::preview_pdf_import,
+            commands::integrations::start_gmail_oauth,
+            commands::integrations::disconnect_gmail,
+            commands::integrations::list_gmail_messages,
+            commands::integrations::start_google_classroom_oauth,
+            commands::integrations::disconnect_google_classroom,
+            commands::integrations::list_classroom_courses,
+            commands::integrations::list_classroom_coursework,
+            commands::integrations::list_classroom_announcements,
+            commands::integrations::start_notion_oauth,
+            commands::integrations::disconnect_notion,
+            commands::integrations::list_notion_pages,
         ])
         .setup(|app| {
             let paths = resolve_app_paths(app.handle())?;

@@ -17,3 +17,13 @@ pub mod csv_import;
 pub mod github;
 pub mod leetcode;
 pub mod pdf_import;
+
+// 07_INTEGRATIONS.md §1.8-§1.10 (2026-07-17 OAuth amendment). `oauth2`
+// is a shared, connector-agnostic utility (token exchange/refresh, PKCE)
+// — not a connector itself — so gmail/google_classroom/notion each
+// import it independently without importing one another, preserving
+// this module's own "none imports another" rule at the connector level.
+pub mod google_classroom;
+pub mod gmail;
+pub mod notion;
+pub mod oauth2;

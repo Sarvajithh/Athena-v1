@@ -18,7 +18,7 @@ rust-version.workspace = true
 # return typed structs, athena-app's commands persist them).
 [dependencies]
 athena-data = { path = "../athena-data" }
-
+athena-ingestion = { path = "../athena-ingestion" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -28,7 +28,8 @@ serde_json = "1"
 # OpenSSL dependency to configure per-platform for a three-OS desktop
 # build (macOS/Windows/Linux, Master Spec §1).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
+rand = "0.8"
+sha2 = "0.10"
 # §1.5 (Resume/Transcript/PDF Import) — local-only text extraction, no
 # network call at all, matching §1.5's "zero outbound dependency"
 # requirement. Pure Rust, no system PDF library dependency.

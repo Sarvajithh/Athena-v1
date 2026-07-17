@@ -1,7 +1,8 @@
-//! Background polling for the three Version 1 connectors that have a
-//! meaningful refresh cadence at all — Codeforces, LeetCode, GitHub
-//! (07_INTEGRATIONS.md §5: "polls on a scheduled cadence... independent
-//! of the app being in the foreground"). Calendar/PDF/CSV import and
+//! Background polling for the connectors with a meaningful refresh
+//! cadence — Codeforces, LeetCode, GitHub (07_INTEGRATIONS.md §5: "polls
+//! on a scheduled cadence... independent of the app being in the
+//! foreground"), plus Gmail, Google Classroom, and Notion as of the
+//! 2026-07-17 OAuth amendment (§1.8-§1.10). Calendar/PDF/CSV import and
 //! Manual entry have no cadence to schedule — they are one-shot, user-
 //! initiated actions (`commands::integrations`'s own module doc).
 //!
@@ -10,7 +11,10 @@
 //! interval loop below only ever starts ticking on a background async
 //! task (`tauri::async_runtime::spawn`), so it can never delay the
 //! window opening (07_INTEGRATIONS.md: "never block startup waiting for
-//! integrations").
+//! integrations"). This holds identically for the three OAuth
+//! connectors: a missing/expired/revoked token degrades that one
+//! source's tick to an `error` status, never a panic, never a delay to
+//! any other source's tick or to startup itself.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -56,7 +60,14 @@ async fn run_one_tick(app_handle: &tauri::AppHandle) {
     };
     let db: &Mutex<Connection> = &*db;
 
-    for source_key in ["codeforces", "leetcode", "github"] {
+    for source_key in [
+        "codeforces",
+        "leetcode",
+        "github",
+        "gmail",
+        "google_classroom",
+        "notion",
+    ] {
         let configured_handle = {
             let Ok(conn) = db.lock() else { continue };
             let Ok(Some(row)) = integrations_repo::get_data_source(&conn, source_key) else {
@@ -83,6 +94,9 @@ async fn run_one_tick(app_handle: &tauri::AppHandle) {
                 None => None,
             },
             "github" => Some(crate::commands::integrations::run_github_sync(db).await),
+            "gmail" => Some(crate::commands::integrations::run_gmail_sync(db).await),
+            "google_classroom" => Some(crate::commands::integrations::run_google_classroom_sync(db).await),
+            "notion" => Some(crate::commands::integrations::run_notion_sync(db).await),
             _ => None,
         };
 

@@ -299,9 +299,11 @@ version = "0.1.0"
 dependencies = [
  "athena-data",
  "pdf-extract",
+ "rand 0.8.7",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
