@@ -20,7 +20,7 @@
   animation: crossfade var(--duration-standard, 220ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
-/* Nav transitions crossfade, they don't slide — four flat top-level
+/* Nav transitions crossfade, they don't slide — five flat top-level
  * screens have no spatial/drill-down hierarchy (§11). */
 @keyframes crossfade {
   from {

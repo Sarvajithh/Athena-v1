@@ -1,5 +1,6 @@
 import { DensityToggle } from '../../components/shared/DensityToggle';
 import { AdaptivePlannerCard } from './AdaptivePlannerCard';
+import { AiInsightCard } from './AiInsightCard';
 import { DeepWorkAllocationCard } from './DeepWorkAllocationCard';
 import { HealthStrip } from './HealthStrip';
 import { MissionStrip } from './MissionStrip';
@@ -37,7 +38,8 @@ function formatWindow(start: string, end: string): string {
  * addition below §1 for the Adaptive Planner (08_ADAPTIVE_PLANNER.md):
  *   0. Mission strip            — always shown, real `user_profile` fields
  *   1. Recommended Action       — the dominant verdict card
- *   1a. Adaptive planner        — log a disruption, see the recompute (new)
+ *   1a. AI insight              — on-demand, collapsed by default (new)
+ *   1b. Adaptive planner        — log a disruption, see the recompute (new)
  *   2. Weakness Snapshot        — intentionally omitted, see note below
  *   3. Today's Intelligence     — intentionally omitted, see note below
  *   4. Health Strip             — Semester · Career · Masters
@@ -92,6 +94,8 @@ export default function Now() {
       {state.profile ? <MissionStrip profile={state.profile} /> : null}
 
       <VerdictCard verdict={state.verdict} />
+
+      <AiInsightCard />
 
       <AdaptivePlannerCard
         semesterActive={state.current_semester !== null}

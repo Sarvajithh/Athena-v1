@@ -13,7 +13,7 @@ import styles from './AppShell.module.css';
  * AppShell
  *  - TitleBar
  *  - NavRail
- *  - ContentRouter (renders exactly one of the four screens)
+ *  - ContentRouter (renders exactly one of the five screens)
  *  - ModalLayer (reserved, behaviorally inert)
  * (SPRINT2_SPEC.md §4). Boots directly to Now within the main app.
  * `App.tsx` is the layer that decides whether to render this shell at
@@ -26,7 +26,7 @@ export function AppShell() {
 
   const navigate = useCallback((id: ScreenId) => setActiveScreen(id), []);
 
-  // Keyboard shortcuts ⌘1–⌘4 / Ctrl+1–4 map to the four screens (§5).
+  // Keyboard shortcuts ⌘1–⌘5 / Ctrl+1–5 map to the five screens (§5).
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey)) return;
@@ -39,7 +39,7 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // `routes` is a fixed, non-empty literal (4 screens, see router.tsx), so the
+  // `routes` is a fixed, non-empty literal (5 screens, see router.tsx), so the
   // fallback index access is safe; non-null assert to satisfy
   // noUncheckedIndexedAccess (Sprint1 tsconfig) without weakening the type.
   const ActiveScreen = routes.find((route) => route.id === activeScreen)?.component ?? routes[0]!.component;

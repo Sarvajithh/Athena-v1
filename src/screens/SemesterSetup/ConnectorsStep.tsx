@@ -1,27 +1,43 @@
 import { useEffect, useState } from 'react';
 import {
   deleteGithubToken,
+  disconnectGmail,
+  disconnectGoogleClassroom,
+  disconnectNotion,
   getLatestCodeforcesSnapshot,
   getLatestLeetCodeSnapshot,
   importCalendarIcs,
   linkGithubRepo,
+  listClassroomAnnouncements,
+  listClassroomCourses,
+  listClassroomCoursework,
   listDataSources,
+  listGmailMessages,
   listLinkedGithubRepos,
+  listNotionPages,
   previewCsvImport,
   previewPdfImport,
   saveGithubToken,
+  startGmailOauth,
+  startGoogleClassroomOauth,
+  startNotionOauth,
   syncCodeforces,
   syncGithub,
   syncLeetCode,
   unlinkGithubRepo,
   type CandidateAchievementDto,
+  type ClassroomAnnouncementDto,
+  type ClassroomCourseDto,
+  type ClassroomCourseworkDto,
   type CodeforcesSnapshotDto,
   type CsvRowDto,
   type DataSourceDto,
   type DeadlineCategory,
   type DsaPracticeLogDto,
+  type GmailMessageDto,
   type LeverageClass,
   type LinkedGithubRepoDto,
+  type NotionPageDto,
   type ParsedDeadlineDto,
   type SourceKey,
 } from '../../ipc/bindings';
@@ -109,6 +125,9 @@ export function ConnectorsStep({ styles, onStageDeadlines }: ConnectorsStepProps
       <CodeforcesPanel styles={styles} source={findSource(sources, 'codeforces')} onSynced={refreshSources} />
       <LeetCodePanel styles={styles} source={findSource(sources, 'leetcode')} onSynced={refreshSources} />
       <GithubPanel styles={styles} source={findSource(sources, 'github')} onSynced={refreshSources} />
+      <GmailPanel styles={styles} source={findSource(sources, 'gmail')} onSynced={refreshSources} />
+      <ClassroomPanel styles={styles} source={findSource(sources, 'google_classroom')} onSynced={refreshSources} />
+      <NotionPanel styles={styles} source={findSource(sources, 'notion')} onSynced={refreshSources} />
       <CalendarImportPanel styles={styles} source={findSource(sources, 'calendar_ics')} onStageDeadlines={onStageDeadlines} onSynced={refreshSources} />
       <PdfImportPanel styles={styles} source={findSource(sources, 'pdf_import')} onStageDeadlines={onStageDeadlines} onSynced={refreshSources} />
       <CsvImportPanel styles={styles} source={findSource(sources, 'csv_import')} onStageDeadlines={onStageDeadlines} onSynced={refreshSources} />
@@ -640,6 +659,274 @@ function CsvImportPanel({
         </>
       )}
       {source && <SyncStatusBadge status={source.status} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Gmail (§1.8, OAuth amendment)
+// ---------------------------------------------------------------------
+
+function GmailPanel({
+  styles,
+  source,
+  onSynced,
+}: {
+  styles: Record<string, string>;
+  source: DataSourceDto | undefined;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [messages, setMessages] = useState<GmailMessageDto[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshMessages = () => listGmailMessages().then(setMessages).catch(() => undefined);
+
+  useEffect(() => {
+    if (source?.status === 'ok') refreshMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.last_synced_at]);
+
+  const handleConnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await startGmailOauth();
+      onSynced();
+      await refreshMessages();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await disconnectGmail();
+      setMessages([]);
+      onSynced();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.repeatRow}>
+      <p className="type-caption">
+        Opens your browser for Gmail consent, then syncs recent messages relevant to deadlines and coursework.
+      </p>
+      <div className={styles.fieldRow}>
+        <div className={styles.field}>
+          <span className="type-caption">&nbsp;</span>
+          <button type="button" className={styles.secondaryButton} onClick={handleConnect} disabled={busy}>
+            {busy ? 'Connecting…' : source?.has_credential ? 'Reconnect' : 'Connect Gmail'}
+          </button>
+        </div>
+        {source?.has_credential && (
+          <div className={styles.field}>
+            <span className="type-caption">&nbsp;</span>
+            <button type="button" className={styles.removeButton} onClick={handleDisconnect} disabled={busy}>
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+      {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+      {messages.length > 0 && (
+        <p className="type-caption">
+          {messages.length} recent message{messages.length === 1 ? '' : 's'} synced.
+        </p>
+      )}
+      {source && (
+        <p className="type-caption">
+          <SyncStatusBadge status={source.status} />
+          {source.status === 'error' && source.last_error ? ` — ${source.last_error}` : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Google Classroom (§1.9, OAuth amendment)
+// ---------------------------------------------------------------------
+
+function ClassroomPanel({
+  styles,
+  source,
+  onSynced,
+}: {
+  styles: Record<string, string>;
+  source: DataSourceDto | undefined;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [courses, setCourses] = useState<ClassroomCourseDto[]>([]);
+  const [coursework, setCoursework] = useState<ClassroomCourseworkDto[]>([]);
+  const [announcements, setAnnouncements] = useState<ClassroomAnnouncementDto[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshAll = () => {
+    listClassroomCourses().then(setCourses).catch(() => undefined);
+    listClassroomCoursework().then(setCoursework).catch(() => undefined);
+    listClassroomAnnouncements().then(setAnnouncements).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (source?.status === 'ok') refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.last_synced_at]);
+
+  const handleConnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await startGoogleClassroomOauth();
+      onSynced();
+      refreshAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await disconnectGoogleClassroom();
+      setCourses([]);
+      setCoursework([]);
+      setAnnouncements([]);
+      onSynced();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.repeatRow}>
+      <p className="type-caption">
+        Opens your browser for Google Classroom consent, then syncs courses, coursework, and announcements.
+      </p>
+      <div className={styles.fieldRow}>
+        <div className={styles.field}>
+          <span className="type-caption">&nbsp;</span>
+          <button type="button" className={styles.secondaryButton} onClick={handleConnect} disabled={busy}>
+            {busy ? 'Connecting…' : source?.has_credential ? 'Reconnect' : 'Connect Classroom'}
+          </button>
+        </div>
+        {source?.has_credential && (
+          <div className={styles.field}>
+            <span className="type-caption">&nbsp;</span>
+            <button type="button" className={styles.removeButton} onClick={handleDisconnect} disabled={busy}>
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+      {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+      {(courses.length > 0 || coursework.length > 0 || announcements.length > 0) && (
+        <p className="type-caption">
+          {courses.length} course{courses.length === 1 ? '' : 's'}, {coursework.length} coursework item
+          {coursework.length === 1 ? '' : 's'}, {announcements.length} announcement
+          {announcements.length === 1 ? '' : 's'} synced.
+        </p>
+      )}
+      {source && (
+        <p className="type-caption">
+          <SyncStatusBadge status={source.status} />
+          {source.status === 'error' && source.last_error ? ` — ${source.last_error}` : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Notion (§1.10, OAuth amendment)
+// ---------------------------------------------------------------------
+
+function NotionPanel({
+  styles,
+  source,
+  onSynced,
+}: {
+  styles: Record<string, string>;
+  source: DataSourceDto | undefined;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [pages, setPages] = useState<NotionPageDto[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshPages = () => listNotionPages().then(setPages).catch(() => undefined);
+
+  useEffect(() => {
+    if (source?.status === 'ok') refreshPages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.last_synced_at]);
+
+  const handleConnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await startNotionOauth();
+      onSynced();
+      await refreshPages();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await disconnectNotion();
+      setPages([]);
+      onSynced();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.repeatRow}>
+      <p className="type-caption">
+        Opens your browser for Notion consent, then syncs pages you've shared with the integration.
+      </p>
+      <div className={styles.fieldRow}>
+        <div className={styles.field}>
+          <span className="type-caption">&nbsp;</span>
+          <button type="button" className={styles.secondaryButton} onClick={handleConnect} disabled={busy}>
+            {busy ? 'Connecting…' : source?.has_credential ? 'Reconnect' : 'Connect Notion'}
+          </button>
+        </div>
+        {source?.has_credential && (
+          <div className={styles.field}>
+            <span className="type-caption">&nbsp;</span>
+            <button type="button" className={styles.removeButton} onClick={handleDisconnect} disabled={busy}>
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+      {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+      {pages.length > 0 && (
+        <p className="type-caption">
+          {pages.length} page{pages.length === 1 ? '' : 's'} synced.
+        </p>
+      )}
+      {source && (
+        <p className="type-caption">
+          <SyncStatusBadge status={source.status} />
+          {source.status === 'error' && source.last_error ? ` — ${source.last_error}` : ''}
+        </p>
+      )}
     </div>
   );
 }

@@ -9,7 +9,7 @@ interface NavRailProps {
 
 /**
  * Slim always-visible icon rail, not a wide sidebar (SPRINT2_SPEC.md
- * §4). Four flat destinations don't need a labeled sidebar's width —
+ * §4). Five flat destinations don't need a labeled sidebar's width —
  * this keeps the content area maximal per spec §5.1's "minimal
  * surface, maximum signal."
  */

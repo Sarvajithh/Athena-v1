@@ -1,0 +1,79 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.headerLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.tab {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  font: inherit;
+}
+
+.tab[data-active='true'] {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.toggleButton {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  font: inherit;
+}
+
+.toggleButton:hover,
+.toggleButton:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.reasoning {
+  color: var(--text-secondary);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.freshness {
+  color: var(--text-tertiary);
+}
+
+.error {
+  color: var(--confidence-insufficient, #d68a8a);
+}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card } from '../../components/shared/Card';
 import { DensityToggle } from '../../components/shared/DensityToggle';
 // import {
@@ -8,6 +8,9 @@ import { DensityToggle } from '../../components/shared/DensityToggle';
 // } from '../../mock/trajectoryFixtures';
 import type { ZoomLevel } from '../../mock/types';
 import { CareerThreadSection } from './CareerThreadSection';
+import { CodeforcesSnapshotCard } from './CodeforcesSnapshotCard';
+import { LeetCodeSnapshotCard } from './LeetCodeSnapshotCard';
+import { ProjectStatusSection } from './ProjectStatusSection';
 // import { MetricSwimlane } from './MetricSwimlane';
 
 import { TrendingUp } from 'lucide-react';
@@ -15,6 +18,14 @@ import { TrendingUp } from 'lucide-react';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { LoadingState } from '../../components/shared/LoadingState';
 
+import {
+  getLatestCodeforcesSnapshot,
+  getLatestLeetCodeSnapshot,
+  listProjectStatusSnapshots,
+  type CodeforcesSnapshotDto,
+  type DsaPracticeLogDto,
+  type ProjectStatusSnapshotDto,
+} from '../../ipc/bindings';
 import { useBootstrap } from '../../state/bootstrapContext';
 import styles from './Trajectory.module.css';
 import { ZoomToggle } from './ZoomToggle';
@@ -65,16 +76,43 @@ import { ZoomToggle } from './ZoomToggle';
  * Trajectory — CGPA/DSA/project trends against target lines at three
  * zoom levels, plus career threads as one section (spec §5.2).
  *
- * The trend-swimlane section is an honest empty state this change: no
- * `grade_snapshots`/`codeforces_snapshots`/research-hours entry UI
- * exists yet (out of scope for onboarding), so there is no real
- * time-series to plot, and Sprint 2's mock swimlane numbers are not
- * reproduced. Career threads, in contrast, are real —
- * `deadlines WHERE category = 'career'` from `get_bootstrap_state`.
+ * The trend-swimlane section renders the latest Codeforces/LeetCode
+ * snapshots when either exists — real current-value reads via
+ * `getLatestCodeforcesSnapshot`/`getLatestLeetCodeSnapshot`
+ * (07_INTEGRATIONS.md §1.1/§1.2), previously only reachable from
+ * `ConnectorsStep.tsx` during onboarding. This is still not the
+ * `grade_snapshots`/time-series trend `MetricSwimlane.tsx` was built
+ * for — no such table exists yet — so an honest empty state remains
+ * the correct render when neither snapshot exists. Career threads are
+ * real — `deadlines WHERE category = 'career'` from
+ * `get_bootstrap_state`.
  */
 export default function Trajectory() {
   const [zoom, setZoom] = useState<ZoomLevel>('month');
   const { state, loading } = useBootstrap();
+
+  const [cfSnapshot, setCfSnapshot] = useState<CodeforcesSnapshotDto | null>(null);
+  const [lcSnapshot, setLcSnapshot] = useState<DsaPracticeLogDto | null>(null);
+  const [projectSnapshots, setProjectSnapshots] = useState<ProjectStatusSnapshotDto[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getLatestCodeforcesSnapshot(), getLatestLeetCodeSnapshot(), listProjectStatusSnapshots()])
+      .then(([cf, lc, projects]) => {
+        if (cancelled) return;
+        setCfSnapshot(cf);
+        setLcSnapshot(lc);
+        setProjectSnapshots(projects);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setSnapshotsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (loading && !state) {
     return (
@@ -83,6 +121,8 @@ export default function Trajectory() {
       </div>
     );
   }
+
+  const hasSnapshots = cfSnapshot != null || lcSnapshot != null;
 
   return (
     <div className={styles.screen}>
@@ -95,16 +135,30 @@ export default function Trajectory() {
       </div>
 
       <Card>
-        <EmptyState
-          icon={TrendingUp}
-          title="No trend data tracked yet"
-          description="CGPA, Codeforces rating, and research-hour trends will appear here once they're being logged."
-        />
+        {snapshotsLoading ? (
+          <LoadingState shape="metric" />
+        ) : hasSnapshots ? (
+          <div className={styles.metricList}>
+            {cfSnapshot ? <CodeforcesSnapshotCard snapshot={cfSnapshot} /> : null}
+            {lcSnapshot ? <LeetCodeSnapshotCard snapshot={lcSnapshot} /> : null}
+          </div>
+        ) : (
+          <EmptyState
+            icon={TrendingUp}
+            title="No trend data tracked yet"
+            description="CGPA, Codeforces rating, and research-hour trends will appear here once they're being logged."
+          />
+        )}
       </Card>
 
       <section className={styles.section}>
         <h2 className={`${styles.sectionTitle} type-body-medium`}>Career threads</h2>
         <CareerThreadSection deadlines={state?.career_deadlines ?? []} />
+      </section>
+
+      <section className={styles.section}>
+        <h2 className={`${styles.sectionTitle} type-body-medium`}>Linked repos</h2>
+        {snapshotsLoading ? <LoadingState shape="list" /> : <ProjectStatusSection snapshots={projectSnapshots} />}
       </section>
     </div>
   );
