@@ -523,3 +523,73 @@ export interface CandidateAchievementDto {
 export async function previewPdfImport(pdfBase64: string): Promise<CandidateAchievementDto[]> {
   return invoke<CandidateAchievementDto[]>("preview_pdf_import", { pdfBase64 });
 }
+// ---------------------------------------------------------------------
+// AI layer (06_AI_ENGINE.md) — mirrors
+// crates/athena-app/src/commands/ai.rs and `athena_reasoning::Recommendation`.
+// Every capability below returns the identical shape: a typed verdict,
+// grounded reasoning, a confidence class, the evidence IDs it cites, a
+// freshness note, and its provenance (`"template"` when no LLM was
+// available or configured — never a failure state, per §10's
+// offline-first requirement). No screen should ever construct prompt
+// text itself; these functions are the only AI-layer surface exposed
+// to the frontend.
+// ---------------------------------------------------------------------
+
+/** Mirrors `athena_reasoning::Recommendation` — §11's mandatory output shape, identical across every capability below. */
+export interface RecommendationDto {
+  verdict: string;
+  reasoning: string;
+  confidence: Confidence;
+  grounded_in: number[];
+  data_freshness_note: string;
+  /** Provenance: `"claude"`, `"ollama"`, or `"template"` (no LLM involved — still fully grounded, just less fluent). */
+  source: string;
+}
+
+/** Daily Pass, on demand (§4.1) — phrases the same Priority Resolution verdict `getBootstrapState` already computes for Now. */
+export async function getDailyBriefing(): Promise<RecommendationDto> {
+  return invoke<RecommendationDto>("get_daily_briefing");
+}
+
+/** Weekly Digest, on demand (§4.2) — a rollup of the week's already-computed Adaptive Planner verdicts, not a new ranking. */
+export async function getWeeklyPlan(): Promise<RecommendationDto> {
+  return invoke<RecommendationDto>("get_weekly_plan");
+}
+
+/** Weakness Analysis, on demand (§4.4) — a presentation of already-graduated `drift_signals`/`bottlenecks` rows. Honestly returns `insufficient_data` until those tables exist in this schema. */
+export async function getWeaknessAnalysis(): Promise<RecommendationDto> {
+  return invoke<RecommendationDto>("get_weakness_analysis");
+}
+
+/** Saves the cloud provider's API key (§9) — stored exclusively in the OS keychain, same as the GitHub token; never persisted to SQLite. */
+export async function saveAnthropicApiKey(key: string): Promise<void> {
+  return invoke<void>("save_anthropic_api_key", { key });
+}
+
+export async function deleteAnthropicApiKey(): Promise<void> {
+  return invoke<void>("delete_anthropic_api_key");
+}
+
+/** Whether a cloud provider key is currently configured — drives the AI settings panel's "connected" state without ever returning the key itself. */
+export async function hasAnthropicApiKey(): Promise<boolean> {
+  return invoke<boolean>("has_anthropic_api_key");
+}
+
+// Hugging Face token management (free tier — no billing required).
+// Get a token at https://huggingface.co/settings/tokens (role: "Inference").
+// Once saved, the HF provider slots in automatically after Anthropic and
+// before Ollama. `source` in RecommendationDto will read "huggingface".
+
+/** Saves the HF Inference API token to the OS keychain. Never stored in SQLite. */
+export async function saveHfApiKey(key: string): Promise<void> {
+  return invoke<void>("save_hf_api_key", { key });
+}
+
+export async function deleteHfApiKey(): Promise<void> {
+  return invoke<void>("delete_hf_api_key");
+}
+
+/** Whether a HF token is currently configured — drives settings UI "connected" state. */
+export async function hasHfApiKey(): Promise<boolean> {
+  return invoke<boolean>("has_hf_api_key");
+}

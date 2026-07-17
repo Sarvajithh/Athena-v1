@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 const SERVICE: &str = "athena-app";
 const GITHUB_TOKEN_USERNAME: &str = "github-personal-access-token";
 const OAUTH_USERNAME_PREFIX: &str = "oauth-tokens-";
+const ANTHROPIC_API_KEY_USERNAME: &str = "anthropic-api-key";
+const HF_API_TOKEN_USERNAME: &str = "huggingface-api-token";
 
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, GITHUB_TOKEN_USERNAME).map_err(|e| e.to_string())
@@ -117,4 +119,75 @@ pub fn delete_oauth_tokens(provider: &str) -> Result<(), String> {
 /// back over IPC).
 pub fn has_oauth_tokens(provider: &str) -> bool {
     matches!(get_oauth_tokens(provider), Ok(Some(_)))
+}
+
+// ---------------------------------------------------------------------
+// Anthropic API key (06_AI_ENGINE.md §9's cloud provider). Same
+// "never in SQLite, never in a plaintext config file, never logged"
+// rule §4 of 07_INTEGRATIONS.md already applies to every other
+// connector credential — the AI layer's cloud provider is not a special
+// case. Absence is the normal, fully-supported "no cloud provider
+// configured" state (§10), not an error.
+// ---------------------------------------------------------------------
+
+fn anthropic_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SERVICE, ANTHROPIC_API_KEY_USERNAME).map_err(|e| e.to_string())
+}
+
+pub fn save_anthropic_api_key(key: &str) -> Result<(), String> {
+    anthropic_entry()?.set_password(key).map_err(|e| e.to_string())
+}
+
+pub fn get_anthropic_api_key() -> Result<Option<String>, String> {
+    match anthropic_entry()?.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn delete_anthropic_api_key() -> Result<(), String> {
+    match anthropic_entry()?.delete_password() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn has_anthropic_api_key() -> bool {
+    matches!(get_anthropic_api_key(), Ok(Some(_)))
+}
+
+// ---------------------------------------------------------------------
+// Hugging Face API token (providers/hf.rs). Free-tier token from
+// https://huggingface.co/settings/tokens — role "Inference" is enough.
+// Same "never in SQLite, never logged" rule as every other credential
+// here. Absence means "HF provider not configured" — the cascade falls
+// through to Ollama / template, never an error.
+// ---------------------------------------------------------------------
+
+fn hf_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(SERVICE, HF_API_TOKEN_USERNAME).map_err(|e| e.to_string())
+}
+
+pub fn save_hf_api_token(token: &str) -> Result<(), String> {
+    hf_entry()?.set_password(token).map_err(|e| e.to_string())
+}
+
+pub fn get_hf_api_token() -> Result<Option<String>, String> {
+    match hf_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn delete_hf_api_token() -> Result<(), String> {
+    match hf_entry()?.delete_password() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn has_hf_api_token() -> bool {
+    matches!(get_hf_api_token(), Ok(Some(_)))
 }

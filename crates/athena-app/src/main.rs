@@ -92,6 +92,15 @@ fn main() {
             commands::integrations::start_notion_oauth,
             commands::integrations::disconnect_notion,
             commands::integrations::list_notion_pages,
+            commands::ai::get_daily_briefing,
+            commands::ai::get_weekly_plan,
+            commands::ai::get_weakness_analysis,
+            commands::ai::save_anthropic_api_key,
+            commands::ai::delete_anthropic_api_key,
+            commands::ai::has_anthropic_api_key,
+            commands::ai::save_hf_api_key,
+            commands::ai::delete_hf_api_key,
+            commands::ai::has_hf_api_key,
         ])
         .setup(|app| {
             let paths = resolve_app_paths(app.handle())?;

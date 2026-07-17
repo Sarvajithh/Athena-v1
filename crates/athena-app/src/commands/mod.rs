@@ -2,6 +2,10 @@
 //! version round trip (SPRINT1_SPEC.md Objective 3); every command in
 //! this crate is named as an imperative verb per Implementation Plan
 //! §2.3. `integrations` (07_INTEGRATIONS.md) is the connector surface.
+//! `ai` (06_AI_ENGINE.md) is the AI layer's surface — every command
+//! there phrases a verdict `athena-domain` already computed, never
+//! computes one of its own.
+pub mod ai;
 pub mod bootstrap;
 pub mod integrations;
 pub mod onboarding;
