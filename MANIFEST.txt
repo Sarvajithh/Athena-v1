@@ -1,0 +1,177 @@
+Athena — three-task implementation manifest
+=============================================
+
+Verified against the repo before starting (per task instructions):
+- Settings IS a 5th nav-rail route (src/router.tsx, src/screens/Settings/) — confirmed.
+- API key save/has/delete for Anthropic + Hugging Face IS wired into Settings — confirmed
+  (src/screens/Settings/index.tsx calls save/has/deleteAnthropicApiKey and the HF equivalents).
+- getDailyBriefing / getWeeklyPlan / getWeaknessAnalysis bindings EXIST in src/ipc/bindings.ts
+  but are NOT called anywhere in the frontend outside bindings.ts itself — i.e. daily briefing,
+  weekly plan, and weakness analysis are NOT actually wired into Settings or any screen yet,
+  despite the task context asserting they were. This is outside the scope of Tasks 1-3 (none of
+  the three tasks ask for this wiring), so it was left untouched, but is flagged here since the
+  context description doesn't match the repo's actual state.
+- Gmail / Google Classroom / Notion OAuth connectors ARE wired into ConnectorsStep.tsx, calling
+  crates/athena-app/src/commands/integrations.rs — confirmed.
+- Codeforces/LeetCode snapshot data IS wired into Trajectory — confirmed (not touched by any task).
+- crates/athena-data/src/repositories/course.rs and deadline.rs have ONLY list_by_semester /
+  insert_courses (course.rs) and list_by_semester / list_open / list_open_career /
+  insert_deadlines (deadline.rs) — confirmed NO update/delete/mark-done commands. No such call
+  was invented anywhere in this change.
+- src/screens/SemesterSetup/ did NOT have separate "CourseEntryStep"/"DeadlineEntryStep" files —
+  course and deadline entry were inline JSX blocks inside index.tsx's step===1/step===2 branches.
+  These were extracted into their own components as part of Task 3 (see below).
+
+TASK 1 — Real desktop app packaging
+------------------------------------
+crates/athena-app/tauri.conf.json
+  - bundle.icon populated with 32x32.png, 128x128.png, 128x128@2x.png, icon.icns, icon.ico
+    (was an empty array).
+  - Added bundle.publisher, bundle.category, bundle.shortDescription, bundle.longDescription
+    (required/recommended by tauri-cli for installer metadata on some targets — none existed
+    before). bundle.identifier ("com.athena.app") and productName ("Athena") were already
+    present and were NOT changed.
+  - No other field changed: window width/height/resizable/title, build config, and CSP were
+    left exactly as-is.
+
+crates/athena-app/icons/icon.png
+  - Re-saved via Pillow at the same 1024x1024 resolution (re-encode only, not a redesign) as
+    part of generating the derived set below from the single source file.
+
+New files, all derived from the existing icons/icon.png (no new icon design):
+  crates/athena-app/icons/32x32.png            — Tauri default small PNG size
+  crates/athena-app/icons/128x128.png           — Tauri default PNG size
+  crates/athena-app/icons/128x128@2x.png        — Tauri default @2x PNG size (256x256)
+  crates/athena-app/icons/icon.ico              — Windows installer icon (16/24/32/48/64/128/256 px)
+  crates/athena-app/icons/icon.icns             — macOS installer icon
+  crates/athena-app/icons/Square30x30Logo.png   — Windows Store tile assets, sizes per
+  crates/athena-app/icons/Square44x44Logo.png     Microsoft's MSIX/AppX manifest requirements,
+  crates/athena-app/icons/Square71x71Logo.png     which tauri-cli's Windows bundler expects
+  crates/athena-app/icons/Square89x89Logo.png     when generating a Store-compatible package.
+  crates/athena-app/icons/Square107x107Logo.png
+  crates/athena-app/icons/Square142x142Logo.png
+  crates/athena-app/icons/Square150x150Logo.png
+  crates/athena-app/icons/Square284x284Logo.png
+  crates/athena-app/icons/Square310x310Logo.png
+  crates/athena-app/icons/StoreLogo.png
+
+ASSUMED/GUESSED VALUES (flagged per task instructions):
+  - bundle.publisher: "Athena" — guessed from productName; there is no publisher/company name
+    anywhere else in the repo. Replace with the real legal/publisher name before shipping.
+  - bundle.category: "Education" — guessed from the app's stated purpose (semester planning /
+    study assistant) in phase_docs and README-adjacent docs. Tauri's bundle.category is drawn
+    from a fixed enum (e.g. "Education", "Productivity", "DeveloperTool", …); "Education" was
+    the closest fit but is not sourced from any explicit repo statement.
+  - bundle.shortDescription / longDescription: written from the app's own docs
+    (06_AI_ENGINE.md, phase_docs) summarizing what Athena does. Not copied from an existing
+    marketing string anywhere in the repo (none exists), so treat as a first draft.
+  - No windows-specific signing identity, macOS signing identity, or Linux .deb/.rpm metadata
+    (maintainer email, etc.) was added — tauri-cli will use its own defaults for these, and the
+    task scope was limited to bundle.icon and adjacent bundle metadata.
+
+TASK 2 — Dynamic/responsive screens
+-------------------------------------
+Audited every .module.css file under src/ (components/shared, components/shell,
+components/modals, and all six screens). Findings:
+
+  - All genuinely fixed px width/height declarations found (nav rail 64px, nav-rail-item 44px,
+    title-bar buttons/dots, status dots/badges 6-8px, modal dialog 420px with a
+    calc(100vw - …) safety clamp already in place) are intentional fixed-size UI chrome, not
+    content containers, and were left unchanged.
+  - Grid layouts already use minmax()/auto-fit responsibly (PhaseStrip, MetricSwimlane) and
+    already reuse the existing @media (max-width: 1024px) breakpoint; no new breakpoint was
+    introduced.
+  - THE ACTUAL BUG: every screen's root `.screen` class sets `max-width: <N>px` but no `margin`
+    or explicit `width`, so at viewports meaningfully wider than that max-width (1440px,
+    1920px+) the screen content sits pinned to the left edge of `.content` with a large dead
+    gap on the right, instead of being centered in the available space. Fixed by adding
+    `width: 100%; margin: 0 auto;` to `.screen` in the five screens below — this makes each
+    screen's content column center itself and scale sensibly between the 1024x768 minimum and
+    larger desktop widths, without touching the per-screen max-width values (960/1080/760px)
+    that were already chosen per screen.
+  - No JS-driven viewport hook was needed or added — the issue and its fix were purely CSS.
+
+Modified:
+  src/screens/Now/Now.module.css                — `.screen`: + width: 100%; margin: 0 auto;
+  src/screens/Trajectory/Trajectory.module.css   — `.screen`: + width: 100%; margin: 0 auto;
+  src/screens/DecisionLog/DecisionLog.module.css — `.screen`: + width: 100%; margin: 0 auto;
+  src/screens/SemesterSetup/SemesterSetup.module.css — `.screen`: + width: 100%; margin: 0 auto;
+    (this file also gained new classes for Task 3, see below)
+  src/screens/Settings/Settings.module.css       — `.screen`: + width: 100%; margin: 0 auto;
+
+TASK 3 — Dynamic Semester Setup
+-----------------------------------
+New files:
+  src/screens/SemesterSetup/types.ts
+    - CourseRowState / DeadlineRowState interfaces and newCourseRow() / newDeadlineRow() /
+      LEVERAGE_OPTIONS / CATEGORY_OPTIONS, extracted out of index.tsx so step components don't
+      import from the wizard's own file.
+
+  src/screens/SemesterSetup/CourseEntryStep.tsx
+    - Extracted from index.tsx's inline step===1 JSX. Accepts `courses` (initial/current
+      values) as a prop and emits every add/edit/remove via `onChange(nextArray)` — no
+      dependency on wizard step-index state, so it can be mounted anywhere.
+
+  src/screens/SemesterSetup/DeadlineEntryStep.tsx
+    - Same pattern as CourseEntryStep, extracted from the inline step===2 JSX. Takes
+      `deadlines` + read-only `courses` (for the "linked course" dropdown) as props, emits via
+      `onChange`.
+
+  src/screens/SemesterSetup/SemesterAtAGlance.tsx
+    - New "current semester at a glance" summary. Replaces the old placeholder Card that only
+      showed a bare course/deadline count. Uses the existing Card and CollapseList shared
+      components to list every current-semester course and deadline with its live `status`
+      field (CourseStatus / DeadlineStatus from ipc/bindings.ts), grouped under "Courses" and
+      "Deadlines". Falls back to the existing EmptyState component when nothing is tracked yet.
+    - Every row renders a disabled "Edit" button with a title tooltip
+      ("Editing not available yet — course and deadline mutation is not supported this
+      semester.") rather than omitting edit affordance silently, per the backend constraint
+      (no update/delete/mark-done commands exist yet in course.rs/deadline.rs).
+
+  ConnectorsStep.tsx was audited against the same "decouple from wizard step-index" requirement
+  and found to already satisfy it — it only takes `styles` and `onStageDeadlines` as props and
+  has no dependency on step index. It was not modified.
+
+Modified:
+  src/screens/SemesterSetup/index.tsx
+    - Replaced the inline course-entry and deadline-entry JSX blocks with
+      <CourseEntryStep styles={styles} courses={courses} onChange={setCourses} /> and
+      <DeadlineEntryStep styles={styles} deadlines={deadlines} courses={courses}
+        onChange={setDeadlines} />.
+    - Replaced the old bare-count placeholder Card in the non-wizard ("at a glance") view with
+      <SemesterAtAGlance courses={state?.courses ?? []} deadlines={state?.deadlines ?? []} />.
+    - Local CourseRowState/DeadlineRowState/newCourseRow/newDeadlineRow/LEVERAGE_OPTIONS/
+      CATEGORY_OPTIONS definitions removed in favor of the shared types.ts.
+    - commitSemesterSetup call, wizard step machinery (step index, canAdvanceFromStep,
+      canCommit, handleCommit), and all Tauri command usage were left exactly as they were —
+      no new command calls were introduced.
+
+  src/screens/SemesterSetup/SemesterSetup.module.css
+    - Added .glanceSection / .glanceGroup / .glanceGroupTitle / .glanceList / .glanceRow /
+      .glanceMeta / .glanceTitle / .glanceDetail / .editDisabled classes for
+      SemesterAtAGlance.tsx. Nothing existing was removed except the now-unused
+      .placeholderCard usage in index.tsx (the CSS class itself was left in place in case
+      something else references it — grep showed nothing does, but removing unused CSS wasn't
+      part of the task scope).
+
+Blocked on backend
+------------------
+  - Nothing new was blocked. The one constraint (no course/deadline update/delete/mark-done)
+    was handled by the disabled "Edit" affordance in SemesterAtAGlance.tsx rather than by
+    inventing a Tauri command — no command call was added anywhere for mutation.
+  - Separately (not a Task 1-3 blocker, just noted for accuracy): the AI daily-briefing/
+    weekly-plan/weakness-analysis bindings exist but nothing in the frontend calls them yet.
+    Wiring them up was not requested by any of the three tasks, so no command call was added or
+    removed for this either.
+
+Verification performed
+-----------------------
+  - crates/athena-app/tauri.conf.json validated as well-formed JSON.
+  - `npx tsc --noEmit` run against the whole frontend: one pre-existing error in
+    ConnectorsStep.tsx (line ~597, "Object is possibly 'undefined'") was confirmed present
+    before any of these changes (verified via `git stash`) and is unrelated to Tasks 1-3; it
+    was left as-is since Task 3 explicitly scopes ConnectorsStep as already-compliant and no
+    task asked for a ConnectorsStep bug fix.
+  - `npx vite build` completes successfully with these changes (only a pre-existing, unrelated
+    "ineffective dynamic import" warning about SemesterSetup being both statically and
+    dynamically imported, which predates this change and isn't part of any of the three tasks).

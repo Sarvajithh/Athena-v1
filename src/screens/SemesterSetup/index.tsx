@@ -8,18 +8,16 @@ import { ClipboardList } from 'lucide-react';
 import { Card } from '../../components/shared/Card';
 import { DensityToggle } from '../../components/shared/DensityToggle';
 import { EmptyState } from '../../components/shared/EmptyState';
-import {
-  commitSemesterSetup,
-  type CourseInput,
-  type DeadlineCategory,
-  type DeadlineInput,
-  type LeverageClass,
-} from '../../ipc/bindings';
+import { commitSemesterSetup, type CourseInput, type DeadlineInput } from '../../ipc/bindings';
 import type { SemesterPhase, WizardStep } from '../../mock/types';
 import { useBootstrap } from '../../state/bootstrapContext';
 import { ConnectorsStep, type StagedDeadline } from './ConnectorsStep';
+import { CourseEntryStep } from './CourseEntryStep';
+import { DeadlineEntryStep } from './DeadlineEntryStep';
 import { PhaseStrip } from './PhaseStrip';
+import { SemesterAtAGlance } from './SemesterAtAGlance';
 import styles from './SemesterSetup.module.css';
+import { newCourseRow, newDeadlineRow, type CourseRowState, type DeadlineRowState } from './types';
 import { WizardStepShell } from './WizardStepShell';
 /**
  * Semester Setup — the re-derivation wizard run at the start of each
@@ -84,8 +82,6 @@ interface SemesterSetupProps {
 }
 
 const STEP_LABELS = ['Basics', 'Courses', 'Deadlines', 'Deep-work window', 'Connectors', 'Review & start'];
-const LEVERAGE_OPTIONS: LeverageClass[] = ['high', 'medium', 'low'];
-const CATEGORY_OPTIONS: DeadlineCategory[] = ['academic', 'career', 'research', 'dsa', 'other'];
 
 function wizardStepsFor(current: number): WizardStep[] {
   return STEP_LABELS.map((label, index) => ({
@@ -93,32 +89,6 @@ function wizardStepsFor(current: number): WizardStep[] {
     label,
     status: index < current ? 'complete' : index === current ? 'current' : 'upcoming',
   }));
-}
-
-interface CourseRowState {
-  code: string;
-  title: string;
-  credits: string;
-  leverageClass: LeverageClass;
-  instructor: string;
-  targetGrade: string;
-}
-
-interface DeadlineRowState {
-  title: string;
-  category: DeadlineCategory;
-  dueAt: string;
-  leverageClass: LeverageClass;
-  notes: string;
-  courseIndex: string; // '' = none, otherwise an index into the courses array as a string
-}
-
-function newCourseRow(): CourseRowState {
-  return { code: '', title: '', credits: '4', leverageClass: 'medium', instructor: '', targetGrade: '' };
-}
-
-function newDeadlineRow(): DeadlineRowState {
-  return { title: '', category: 'academic', dueAt: '', leverageClass: 'medium', notes: '', courseIndex: '' };
 }
 
 /**
@@ -265,14 +235,8 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
         <section>
           <h2 className={`${styles.sectionTitle} type-body-medium`}>This semester at a glance</h2>
           <PhaseStrip phases={currentSemesterPhase} />
+          <SemesterAtAGlance courses={state?.courses ?? []} deadlines={state?.deadlines ?? []} />
         </section>
-
-        <Card className={styles.placeholderCard}>
-          <p className="type-body">
-            {state?.courses.length ?? 0} course{state?.courses.length === 1 ? '' : 's'} ·{' '}
-            {state?.deadlines.length ?? 0} deadline{state?.deadlines.length === 1 ? '' : 's'} tracked this semester.
-          </p>
-        </Card>
 
         <button
           type="button"
@@ -335,201 +299,10 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
           </div>
         )}
 
-        {step === 1 && (
-          <div className={styles.form}>
-            {courses.map((course, index) => (
-              <div key={index} className={styles.repeatRow}>
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className="type-caption">Course code</span>
-                    <input
-                      className={styles.input}
-                      value={course.code}
-                      onChange={(e) =>
-                        setCourses((rows) => rows.map((r, i) => (i === index ? { ...r, code: e.target.value } : r)))
-                      }
-                      placeholder="e.g., CS5590"
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span className="type-caption">Title</span>
-                    <input
-                      className={styles.input}
-                      value={course.title}
-                      onChange={(e) =>
-                        setCourses((rows) => rows.map((r, i) => (i === index ? { ...r, title: e.target.value } : r)))
-                      }
-                      placeholder="e.g., Statistical Machine Learning"
-                    />
-                  </label>
-                </div>
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className="type-caption">Credits</span>
-                    <input
-                      className={styles.input}
-                      type="number"
-                      min="0"
-                      value={course.credits}
-                      onChange={(e) =>
-                        setCourses((rows) => rows.map((r, i) => (i === index ? { ...r, credits: e.target.value } : r)))
-                      }
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span className="type-caption">Leverage</span>
-                    <select
-                      className={styles.input}
-                      value={course.leverageClass}
-                      onChange={(e) =>
-                        setCourses((rows) =>
-                          rows.map((r, i) => (i === index ? { ...r, leverageClass: e.target.value as LeverageClass } : r)),
-                        )
-                      }
-                    >
-                      {LEVERAGE_OPTIONS.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className={styles.field}>
-                    <span className="type-caption">Instructor (optional)</span>
-                    <input
-                      className={styles.input}
-                      value={course.instructor}
-                      onChange={(e) =>
-                        setCourses((rows) => rows.map((r, i) => (i === index ? { ...r, instructor: e.target.value } : r)))
-                      }
-                    />
-                  </label>
-                </div>
-                {courses.length > 1 && (
-                  <button
-                    type="button"
-                    className={styles.removeButton}
-                    onClick={() => setCourses((rows) => rows.filter((_, i) => i !== index))}
-                  >
-                    Remove course
-                  </button>
-                )}
-              </div>
-            ))}
-            <button type="button" className={styles.secondaryButton} onClick={() => setCourses((rows) => [...rows, newCourseRow()])}>
-              Add another course
-            </button>
-          </div>
-        )}
+        {step === 1 && <CourseEntryStep styles={styles} courses={courses} onChange={setCourses} />}
 
         {step === 2 && (
-          <div className={styles.form}>
-            {deadlines.map((deadline, index) => (
-              <div key={index} className={styles.repeatRow}>
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className="type-caption">Title</span>
-                    <input
-                      className={styles.input}
-                      value={deadline.title}
-                      onChange={(e) =>
-                        setDeadlines((rows) => rows.map((r, i) => (i === index ? { ...r, title: e.target.value } : r)))
-                      }
-                      placeholder="e.g., CS3231 problem set 3"
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span className="type-caption">Due</span>
-                    <input
-                      className={styles.input}
-                      type="datetime-local"
-                      value={deadline.dueAt}
-                      onChange={(e) =>
-                        setDeadlines((rows) => rows.map((r, i) => (i === index ? { ...r, dueAt: e.target.value } : r)))
-                      }
-                    />
-                  </label>
-                </div>
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className="type-caption">Category</span>
-                    <select
-                      className={styles.input}
-                      value={deadline.category}
-                      onChange={(e) =>
-                        setDeadlines((rows) =>
-                          rows.map((r, i) => (i === index ? { ...r, category: e.target.value as DeadlineCategory } : r)),
-                        )
-                      }
-                    >
-                      {CATEGORY_OPTIONS.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className={styles.field}>
-                    <span className="type-caption">Leverage</span>
-                    <select
-                      className={styles.input}
-                      value={deadline.leverageClass}
-                      onChange={(e) =>
-                        setDeadlines((rows) =>
-                          rows.map((r, i) => (i === index ? { ...r, leverageClass: e.target.value as LeverageClass } : r)),
-                        )
-                      }
-                    >
-                      {LEVERAGE_OPTIONS.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {nonEmptyCourses.length > 0 && (
-                    <label className={styles.field}>
-                      <span className="type-caption">Linked course (optional)</span>
-                      <select
-                        className={styles.input}
-                        value={deadline.courseIndex}
-                        onChange={(e) =>
-                          setDeadlines((rows) =>
-                            rows.map((r, i) => (i === index ? { ...r, courseIndex: e.target.value } : r)),
-                          )
-                        }
-                      >
-                        <option value="">None</option>
-                        {courses.map((c, i) =>
-                          c.code.trim() || c.title.trim() ? (
-                            <option key={i} value={i}>
-                              {c.code || c.title}
-                            </option>
-                          ) : null,
-                        )}
-                      </select>
-                    </label>
-                  )}
-                </div>
-                {deadlines.length > 1 && (
-                  <button
-                    type="button"
-                    className={styles.removeButton}
-                    onClick={() => setDeadlines((rows) => rows.filter((_, i) => i !== index))}
-                  >
-                    Remove deadline
-                  </button>
-                )}
-              </div>
-            ))}
-            <button
-              type="button"
-              className={styles.secondaryButton}
-              onClick={() => setDeadlines((rows) => [...rows, newDeadlineRow()])}
-            >
-              Add another deadline
-            </button>
-          </div>
+          <DeadlineEntryStep styles={styles} deadlines={deadlines} courses={courses} onChange={setDeadlines} />
         )}
 
         {step === 3 && (

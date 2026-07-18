@@ -594,7 +594,9 @@ function CsvImportPanel({
       const content = await readFileAsText(file);
       const parsed = await previewCsvImport(content);
       setRows(parsed);
-      setHeaders(parsed.length > 0 ? Object.keys(parsed[0].cells) : []);
+      const first = parsed[0];
+
+      setHeaders(first ? Object.keys(first.cells) : []);
       onSynced();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

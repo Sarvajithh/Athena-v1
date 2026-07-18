@@ -170,7 +170,7 @@ mod tests {
             stricter:      false,
         };
         let msgs = HuggingFaceProvider::messages(&req).to_string();
-        assert!(msgs.contains("\"id\":7"));
+        assert!(msgs.contains(r#"\"id\":7"#));
         assert!(msgs.contains("object"));
         assert!(msgs.contains("persona"));
     }
