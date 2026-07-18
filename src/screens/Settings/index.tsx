@@ -11,6 +11,7 @@ import {
 } from '../../ipc/bindings';
 import { ApiKeyPanel } from './ApiKeyPanel';
 import { ConnectorsSection } from './ConnectorsSection';
+import { QuestionnaireScheduleSection } from './QuestionnaireScheduleSection';
 import { RoutineTriggerSection } from './RoutineTriggerSection';
 import styles from './Settings.module.css';
 
@@ -99,6 +100,8 @@ export default function Settings() {
       </section>
 
       <ConnectorsSection styles={styles} />
+
+      <QuestionnaireScheduleSection />
 
       <RoutineTriggerSection styles={styles} />
     </div>

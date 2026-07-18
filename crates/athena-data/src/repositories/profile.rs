@@ -25,6 +25,10 @@ pub struct ProfileRow {
     pub deep_work_window_start: String,
     pub deep_work_window_end: String,
     pub timezone: String,
+    /// `HH:MM`, 24-hour, local time — when the scheduled daily-
+    /// questionnaire trigger should fire (V7 migration). Defaults to
+    /// `"20:00"` for every row via the column's own `DEFAULT`.
+    pub routine_questionnaire_time: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -60,7 +64,7 @@ pub fn get_current_profile(conn: &Connection) -> Result<Option<ProfileRow>, Data
     conn.query_row(
         "SELECT id, name, institute, program, current_semester_id, target_cgpa, current_cgpa, \
          career_target, masters_target, codeforces_handle, deep_work_window_start, \
-         deep_work_window_end, timezone, created_at, updated_at \
+         deep_work_window_end, timezone, routine_questionnaire_time, created_at, updated_at \
          FROM user_profile ORDER BY id LIMIT 1",
         [],
         row_to_profile,
@@ -84,9 +88,40 @@ fn row_to_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileRow> {
         deep_work_window_start: row.get(10)?,
         deep_work_window_end: row.get(11)?,
         timezone: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
+        routine_questionnaire_time: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
     })
+}
+
+/// Reads just the configured questionnaire time, without paying for a
+/// full `ProfileRow` fetch — `None` means no `user_profile` row exists
+/// yet (pre-onboarding); the command layer falls back to `"20:00"` in
+/// that case, same as a fresh row's own column default would.
+pub fn get_routine_questionnaire_time(conn: &Connection) -> Result<Option<String>, DataError> {
+    conn.query_row(
+        "SELECT routine_questionnaire_time FROM user_profile ORDER BY id LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(DataError::from)
+}
+
+/// Updates the configured questionnaire time on the single
+/// `user_profile` row. A no-op (`Ok(())`, zero rows affected) if no
+/// profile exists yet — there is nothing to save onto before
+/// onboarding, and the Settings screen that calls this is unreachable
+/// until onboarding completes anyway (`App.tsx`'s `needsOnboarding`
+/// gate), so this is a defensive fallback, not a reachable path today.
+pub fn set_routine_questionnaire_time(conn: &Connection, time: &str) -> Result<(), DataError> {
+    conn.execute(
+        "UPDATE user_profile SET routine_questionnaire_time = ?1, \
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = (SELECT id FROM user_profile ORDER BY id LIMIT 1)",
+        params![time],
+    )?;
+    Ok(())
 }
 
 /// Commits Profile Creation Step 5 (03_ONBOARDING.md §2, Step 5):
@@ -226,5 +261,26 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM user_profile_history", [], |r| r.get(0))
             .unwrap();
         assert_eq!(history_count, 1);
+    }
+
+    #[test]
+    fn routine_questionnaire_time_defaults_and_updates() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut conn = open_and_migrate(tmp.path()).unwrap();
+
+        // No profile yet — nothing to read.
+        assert!(get_routine_questionnaire_time(&conn).unwrap().is_none());
+
+        create_profile_with_history(&mut conn, &new_profile()).unwrap();
+
+        // Column default applies to the freshly-inserted row.
+        assert_eq!(get_routine_questionnaire_time(&conn).unwrap().as_deref(), Some("20:00"));
+
+        set_routine_questionnaire_time(&conn, "07:45").unwrap();
+        assert_eq!(get_routine_questionnaire_time(&conn).unwrap().as_deref(), Some("07:45"));
+
+        // Also visible through the full profile row.
+        let profile = get_current_profile(&conn).unwrap().unwrap();
+        assert_eq!(profile.routine_questionnaire_time, "07:45");
     }
 }

@@ -187,6 +187,42 @@ pub fn has_weekly_routine_response(
     routine::has_response_for_week(&conn, &week_starting).map_err(|e| e.to_string())
 }
 
+/// The scheduled daily-questionnaire trigger's fallback when no
+/// `user_profile` row has a value yet — mirrors the V7 migration
+/// column's own `DEFAULT '20:00'`, so a fresh profile and a pre-
+/// onboarding read agree on the same default without either one having
+/// to special-case the other.
+const DEFAULT_ROUTINE_QUESTIONNAIRE_TIME: &str = "20:00";
+
+/// Saves the local `HH:MM` time of day the scheduled daily-
+/// questionnaire trigger (`routine_scheduler::spawn`) should fire.
+/// Stored on `user_profile` (V7 migration) — see that migration's own
+/// doc comment for why it lives there rather than a new table.
+#[tauri::command]
+pub fn save_routine_questionnaire_time(
+    db: State<'_, Mutex<Connection>>,
+    time: String,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    athena_data::repositories::profile::set_routine_questionnaire_time(&conn, &time)
+        .map_err(|e| e.to_string())
+}
+
+/// Reads the configured time back, falling back to
+/// `DEFAULT_ROUTINE_QUESTIONNAIRE_TIME` both pre-onboarding (no
+/// `user_profile` row at all — the repository call returns `Ok(None)`)
+/// and on any read error, so Settings' time input always has something
+/// valid to render rather than an empty/error state.
+#[tauri::command]
+pub fn get_routine_questionnaire_time(db: State<'_, Mutex<Connection>>) -> Result<String, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    Ok(
+        athena_data::repositories::profile::get_routine_questionnaire_time(&conn)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|| DEFAULT_ROUTINE_QUESTIONNAIRE_TIME.to_string()),
+    )
+}
+
 #[tauri::command]
 pub fn list_recent_weekly_routine_responses(
     db: State<'_, Mutex<Connection>>,

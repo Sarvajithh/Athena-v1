@@ -83,6 +83,16 @@ dirs = "5"
 # redirect listener needs `TcpListener` plus `AsyncRead`/`AsyncWrite`.
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "net", "io-util"] }
 
+# Daily-questionnaire scheduled trigger (Task: "Add a scheduled,
+# time-based daily questionnaire prompt"). `chrono` is already present
+# transitively (see Cargo.lock) at 0.4.45; pinned directly here since
+# `routine_scheduler.rs` now names it explicitly for local-time
+# sleep-until-target-time math (`Local`, `NaiveTime`). `tauri-plugin-
+# notification` is the one new first-party Tauri plugin this task adds
+# — the system notification shown when the questionnaire comes due.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tauri-plugin-notification = "2"
+
 # Needed to name the `rusqlite::Connection` type held in Tauri-managed
 # state (`app.manage(Mutex::new(conn))` in main.rs) so the onboarding
 # commands can declare `State<'_, Mutex<Connection>>`. Same pinned

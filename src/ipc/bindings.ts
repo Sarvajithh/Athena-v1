@@ -53,6 +53,8 @@ export interface ProfileRow {
   deep_work_window_start: string;
   deep_work_window_end: string;
   timezone: string;
+  /** `HH:MM`, 24-hour, local time — when the scheduled daily-questionnaire trigger fires (V7 migration). */
+  routine_questionnaire_time: string;
   created_at: string;
   updated_at: string;
 }
@@ -288,6 +290,19 @@ export async function hasWeeklyRoutineResponse(weekStarting: string): Promise<bo
 
 export async function listRecentWeeklyRoutineResponses(limit = 8): Promise<WeeklyRoutineResponseDto[]> {
   return invoke<WeeklyRoutineResponseDto[]>("list_recent_weekly_routine_responses", { limit });
+}
+
+// Scheduled daily-questionnaire trigger's configurable fire time
+// (routine_scheduler.rs / commands/routine.rs). `time` is `HH:MM`,
+// 24-hour, matching the `<input type="time">` element's own value
+// format one-to-one — no client-side reformatting needed either way.
+
+export async function saveRoutineQuestionnaireTime(time: string): Promise<void> {
+  return invoke<void>("save_routine_questionnaire_time", { time });
+}
+
+export async function getRoutineQuestionnaireTime(): Promise<string> {
+  return invoke<string>("get_routine_questionnaire_time");
 }
 
 export interface CreateProfileInput {

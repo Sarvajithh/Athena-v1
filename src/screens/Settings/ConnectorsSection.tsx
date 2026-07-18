@@ -71,12 +71,14 @@ export function ConnectorsSection({ styles }: { styles: Record<string, string> }
       </p>
       {loadError && <p className={`${styles.error} type-caption`}>{loadError}</p>}
 
-      <CodeforcesPanel styles={styles} source={findSource(sources, 'codeforces')} onSynced={refreshSources} />
-      <LeetCodePanel styles={styles} source={findSource(sources, 'leetcode')} onSynced={refreshSources} />
-      <GithubPanel styles={styles} source={findSource(sources, 'github')} onSynced={refreshSources} />
-      <GmailPanel styles={styles} source={findSource(sources, 'gmail')} onSynced={refreshSources} />
-      <ClassroomPanel styles={styles} source={findSource(sources, 'google_classroom')} onSynced={refreshSources} />
-      <NotionPanel styles={styles} source={findSource(sources, 'notion')} onSynced={refreshSources} />
+      <div className={styles.connectorsGrid}>
+        <CodeforcesPanel styles={styles} source={findSource(sources, 'codeforces')} onSynced={refreshSources} />
+        <LeetCodePanel styles={styles} source={findSource(sources, 'leetcode')} onSynced={refreshSources} />
+        <GithubPanel styles={styles} source={findSource(sources, 'github')} onSynced={refreshSources} />
+        <GmailPanel styles={styles} source={findSource(sources, 'gmail')} onSynced={refreshSources} />
+        <ClassroomPanel styles={styles} source={findSource(sources, 'google_classroom')} onSynced={refreshSources} />
+        <NotionPanel styles={styles} source={findSource(sources, 'notion')} onSynced={refreshSources} />
+      </div>
     </section>
   );
 }

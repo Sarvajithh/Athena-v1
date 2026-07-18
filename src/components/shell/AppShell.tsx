@@ -11,7 +11,9 @@ import styles from './AppShell.module.css';
 
 /**
  * AppShell
- *  - TitleBar
+ *  - TitleBar (hidden on the Settings screen, which renders edge-to-edge
+ *    without the title bar's top strip — see the `activeScreen` check
+ *    below)
  *  - NavRail
  *  - ContentRouter (renders exactly one of the five screens)
  *  - ModalLayer (reserved, behaviorally inert)
@@ -49,7 +51,7 @@ export function AppShell() {
       <ModalProvider>
         <NavigationProvider activeScreen={activeScreen} navigate={navigate}>
           <div className={styles.shell}>
-            <TitleBar />
+            {activeScreen !== 'settings' && <TitleBar />}
             <div className={styles.body}>
               <NavRail activeScreen={activeScreen} onNavigate={navigate} />
               <main className={styles.content} key={activeScreen}>

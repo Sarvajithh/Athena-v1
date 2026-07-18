@@ -1,13 +1,17 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
 
 /**
- * The two named modal exceptions (spec §1.3) and nothing else may ever
- * occupy this layer (SPRINT2_SPEC.md §4: "a hard ceiling, not a
- * starting point"). Both shells are wired to a dev-only trigger this
- * sprint (§19 manual test #10) — no real trigger logic (Decision
- * Challenge Layer, Deep Work Guard) exists yet.
+ * The two named modal exceptions (spec §1.3) plus one more added by a
+ * later task, and nothing else may ever occupy this layer (originally
+ * SPRINT2_SPEC.md §4: "a hard ceiling, not a starting point"; the
+ * scheduled daily-questionnaire prompt is the one deliberate,
+ * documented exception to that ceiling — it fires from a real
+ * background trigger, `routine_scheduler.rs`, not the dev-only
+ * shortcut the other two still use). `'daily-questionnaire'` is
+ * dismissible, not hard-blocking, unlike the other two's alert-dialog
+ * framing — see `DailyQuestionnaireModal.tsx`'s own doc comment.
  */
-export type ActiveModal = 'challenge' | 'deep-work-guard' | null;
+export type ActiveModal = 'challenge' | 'deep-work-guard' | 'daily-questionnaire' | null;
 
 interface ModalContextValue {
   activeModal: ActiveModal;

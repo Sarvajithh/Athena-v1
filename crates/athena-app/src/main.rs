@@ -5,6 +5,7 @@
 mod commands;
 mod keychain;
 mod oauth_loopback;
+mod routine_scheduler;
 mod scheduler;
 
 use std::path::PathBuf;
@@ -59,6 +60,10 @@ fn init_logging(log_dir: &std::path::Path) -> anyhow::Result<tracing_appender::n
 
 fn main() {
     let builder = tauri::Builder::default()
+        // Task: scheduled daily-questionnaire trigger — the system
+        // notification shown when it fires. Registered once here, at
+        // the same point every other cross-cutting builder call lives.
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_version,
             commands::is_using_keychain_fallback,
@@ -73,6 +78,8 @@ fn main() {
             commands::routine::submit_weekly_routine_response,
             commands::routine::has_weekly_routine_response,
             commands::routine::list_recent_weekly_routine_responses,
+            commands::routine::save_routine_questionnaire_time,
+            commands::routine::get_routine_questionnaire_time,
             commands::integrations::list_data_sources,
             commands::integrations::sync_codeforces,
             commands::integrations::get_latest_codeforces_snapshot,
@@ -142,6 +149,12 @@ fn main() {
             // whether or not Codeforces/LeetCode/GitHub are reachable
             // right now, or ever.
             scheduler::spawn(app.handle().clone());
+
+            // Same "never block startup" contract as the line above:
+            // this only schedules a background async task and returns
+            // immediately — the window opens whether or not today's
+            // questionnaire time has been reached yet.
+            routine_scheduler::spawn(app.handle().clone());
 
             Ok(())
         });
