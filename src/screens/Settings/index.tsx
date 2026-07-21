@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import { DensityToggle } from '../../components/shared/DensityToggle';
 import {
   deleteAnthropicApiKey,
+  deleteGeminiApiKey,
   deleteHfApiKey,
   hasAnthropicApiKey,
+  hasGeminiApiKey,
   hasHfApiKey,
   isUsingKeychainFallback,
   saveAnthropicApiKey,
+  saveGeminiApiKey,
   saveHfApiKey,
 } from '../../ipc/bindings';
 import { ApiKeyPanel } from './ApiKeyPanel';
@@ -14,6 +17,7 @@ import { ConnectorsSection } from './ConnectorsSection';
 import { QuestionnaireScheduleSection } from './QuestionnaireScheduleSection';
 import { RoutineTriggerSection } from './RoutineTriggerSection';
 import styles from './Settings.module.css';
+
 
 /**
  * Settings — a fifth flat nav-rail destination hosting the AI provider
@@ -86,7 +90,16 @@ export default function Settings() {
           saveKey={saveAnthropicApiKey}
           deleteKey={deleteAnthropicApiKey}
         />
-
+        <ApiKeyPanel
+          label="Gemini"
+          description="Free-tier alternative — no billing required. Slots in automatically after Anthropic and before Hugging Face."
+          placeholder="AIza…"
+          helpUrl="https://aistudio.google.com/app/apikey"
+          helpLabel="Get a free API key"
+          hasKey={hasGeminiApiKey}
+          saveKey={saveGeminiApiKey}
+          deleteKey={deleteGeminiApiKey}
+        />
         <ApiKeyPanel
           label="Hugging Face"
           description="Free-tier alternative — no billing required. Slots in automatically after Anthropic and before Ollama."

@@ -1,0 +1,132 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--density-group-gap);
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.eyebrow {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.groupLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.groupLabel[data-urgency='overdue'] {
+  color: var(--severity-urgent);
+}
+
+.groupLabel[data-urgency='today'] {
+  color: var(--severity-flag);
+}
+
+.groupCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  background: var(--bg-surface-raised);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.card {
+  padding: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.urgencyDot {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.urgencyDot[data-urgency='overdue'] {
+  background: var(--severity-urgent);
+}
+
+.urgencyDot[data-urgency='today'] {
+  background: var(--severity-flag);
+}
+
+.urgencyDot[data-urgency='this-week'] {
+  background: var(--severity-watch);
+}
+
+.rowMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.rowTitle {
+  color: var(--text-primary);
+}
+
+.rowDetail {
+  color: var(--text-secondary);
+}
+
+.rowDue {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.row[data-urgency='overdue'] .rowDue {
+  color: var(--severity-urgent);
+}
+
+.row[data-urgency='today'] .rowDue {
+  color: var(--severity-flag);
+}

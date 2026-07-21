@@ -9,3 +9,7 @@
   background: var(--bg-canvas);
   border-right: 1px solid var(--border-subtle);
 }
+
+.spacer {
+  flex: 1;
+}

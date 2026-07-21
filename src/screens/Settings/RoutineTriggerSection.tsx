@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { DailyForm, WeeklyForm } from '../Now/RoutineQuestionnaireCard';
+import { DailyConversationForm, WeeklyForm } from '../Now/RoutineQuestionnaireCard';
 import { useBootstrap } from '../../state/bootstrapContext';
 
 /**
@@ -7,7 +7,7 @@ import { useBootstrap } from '../../state/bootstrapContext';
  * questionnaires (Task 2's required Settings trigger), for anyone who
  * dismissed the Now-screen prompt, already answered today/this week
  * and wants to log a mid-day update, or just wants to see the forms.
- * Reuses `Now/RoutineQuestionnaireCard.tsx`'s exact `DailyForm`/
+ * Reuses `Now/RoutineQuestionnaireCard.tsx`'s exact `DailyConversationForm`/
  * `WeeklyForm` — no duplicate form logic.
  */
 export function RoutineTriggerSection({ styles }: { styles: Record<string, string> }) {
@@ -33,7 +33,8 @@ export function RoutineTriggerSection({ styles }: { styles: Record<string, strin
           </button>
         </div>
       ) : mode === 'daily' ? (
-        <DailyForm
+        <DailyConversationForm
+          courses={state?.courses ?? []}
           onDone={() => {
             setJustSaved('daily');
             setMode(null);

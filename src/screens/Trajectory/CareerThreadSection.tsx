@@ -49,7 +49,7 @@ export function CareerThreadSection({ deadlines }: CareerThreadSectionProps) {
       <EmptyState
         icon={Briefcase}
         title="No open career threads this semester"
-        description="Career-category deadlines you add in Semester Setup will show up here."
+        description="Add a placement, internship, or higher-studies goal from Semester → Career — it'll show up here."
       />
     );
   }

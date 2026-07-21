@@ -1,0 +1,70 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.title {
+  color: var(--text-secondary);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.row {
+  display: flex;
+  gap: var(--space-5);
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.metricLabel {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.gap {
+  margin: 0;
+  color: var(--severity-flag);
+}
+
+.gap[data-ahead='true'] {
+  color: var(--text-secondary);
+}
+
+.trackerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.trackerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.trackerRow:last-child {
+  border-bottom: none;
+}
+
+.trackerTitle {
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trackerDue {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}

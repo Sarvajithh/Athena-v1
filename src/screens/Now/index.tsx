@@ -1,6 +1,5 @@
 import { DensityToggle } from '../../components/shared/DensityToggle';
 import { AdaptivePlannerCard } from './AdaptivePlannerCard';
-import { AiInsightCard } from './AiInsightCard';
 import { DeepWorkAllocationCard } from './DeepWorkAllocationCard';
 import { HealthStrip } from './HealthStrip';
 import { MissionStrip } from './MissionStrip';
@@ -35,30 +34,25 @@ function formatWindow(start: string, end: string): string {
  * (09_DECISION_ENGINE.md; 08_ADAPTIVE_PLANNER.md). No mock values
  * anywhere in this tree.
  *
- * Structural hierarchy, top to bottom, matches §2 exactly, with one
- * addition below §1 for the Adaptive Planner (08_ADAPTIVE_PLANNER.md):
+ * Structural hierarchy, top to bottom:
  *   0. Mission strip            — always shown, real `user_profile` fields
  *   1. Recommended Action       — the dominant verdict card
- *   1a. AI insight              — on-demand, collapsed by default (new)
- *   1b. Adaptive planner        — log a disruption, see the recompute (new)
- *   2. Weakness Snapshot        — intentionally omitted, see note below
- *   3. Today's Intelligence     — intentionally omitted, see note below
+ *   1a. Adaptive planner        — log a disruption, see the recompute
+ *   1b. Daily routine           — AI-conversation questionnaire feeding the planner (RoutineQuestionnaireCard.tsx)
  *   4. Health Strip             — Semester · Career · Masters
- *   5. Opportunity Feed         — intentionally omitted, see note below
  *   6. Quick Launch             — bottom, lowest emphasis
  *
- * Sections 2, 3, and 5 are conditionally rendered by design (§2: "take
- * zero vertical space when there's nothing real to show"). All three
- * are always-empty today because their backing tables
- * (`bottlenecks`, `drift_signals`, `opportunities`,
- * `project_status_snapshots`, `research_activities`) don't exist in
- * this schema, and this change is explicitly scoped not to modify
- * storage beyond `schedule_disruptions` (08_ADAPTIVE_PLANNER.md §5).
- * Per §2's own rule — "an empty bottleneck section is not shown as
- * 'no bottlenecks! 🎉' — it simply isn't there" — the correct,
- * spec-faithful render of "always empty" is exactly what a genuinely
- * inactive one would already look like: absent. Nothing here fakes
- * data to fill those three sections.
+ * No conversational AI lives on this screen — that's Ask Athena's job
+ * exclusively (nav rail). Now is scoped to exactly what the governing
+ * test needs: the Verdict, the Adaptive Planner, and Health. The old
+ * on-demand "AI insight" card (`AiInsightCard.tsx`) has been removed
+ * entirely, not just unmounted — free-form AI conversation belongs in
+ * Ask Athena, and duplicating it here undercut that screen's reason to
+ * exist. `RoutineQuestionnaireCard` stays: it isn't open-ended chat,
+ * it's a bounded, planner-facing data-collection step (its answers
+ * become `SubmitDailyRoutineInput`, same as before) — Gemini is only
+ * used there to phrase 3–5 contextual questions, never to answer
+ * anything.
  */
 export default function Now() {
   const { state, loading, refresh } = useBootstrap();
@@ -96,8 +90,6 @@ export default function Now() {
 
       <VerdictCard verdict={state.verdict} />
 
-      <AiInsightCard />
-
       <AdaptivePlannerCard
         semesterActive={state.current_semester !== null}
         availableMinutesTonight={state.available_minutes_tonight}
@@ -125,8 +117,8 @@ export default function Now() {
       ) : null}
 
       <QuickLaunch
-        onOpenSemesterSetup={() => navigate('semester-setup')}
-        onOpenDecisionLog={() => navigate('decision-log')}
+        onOpenSemester={() => navigate('semester')}
+        onOpenAskAthena={() => navigate('ask-athena')}
       />
     </div>
   );

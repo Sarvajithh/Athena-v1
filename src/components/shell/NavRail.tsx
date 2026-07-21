@@ -1,4 +1,4 @@
-import { routes, type ScreenId } from '../../router';
+import { routes, settingsRoute, type ScreenId } from '../../router';
 import { NavRailItem } from './NavRailItem';
 import styles from './NavRail.module.css';
 
@@ -8,10 +8,12 @@ interface NavRailProps {
 }
 
 /**
- * Slim always-visible icon rail, not a wide sidebar (SPRINT2_SPEC.md
- * §4). Five flat destinations don't need a labeled sidebar's width —
- * this keeps the content area maximal per spec §5.1's "minimal
- * surface, maximum signal."
+ * Slim always-visible icon rail, not a wide sidebar. Five flat primary
+ * destinations (`routes`) up top; Settings is docked to the bottom as
+ * a gear icon instead of living in the primary list — it's a
+ * revisitable configuration surface, not a place someone navigates to
+ * as often as Now/Deadlines/Trajectory/Ask Athena/Semester, so it gets
+ * visual separation via `styles.spacer` pushing it to the rail's foot.
  */
 export function NavRail({ activeScreen, onNavigate }: NavRailProps) {
   return (
@@ -26,6 +28,15 @@ export function NavRail({ activeScreen, onNavigate }: NavRailProps) {
           onSelect={() => onNavigate(route.id)}
         />
       ))}
+      <div className={styles.spacer} />
+      <NavRailItem
+        key={settingsRoute.id}
+        icon={settingsRoute.icon}
+        label={settingsRoute.label}
+        shortcut={settingsRoute.shortcut}
+        active={activeScreen === settingsRoute.id}
+        onSelect={() => onNavigate(settingsRoute.id)}
+      />
     </nav>
   );
 }

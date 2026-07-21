@@ -1,91 +1,51 @@
 import { useEffect, useState } from 'react';
+import { TrendingUp } from 'lucide-react';
 import { Card } from '../../components/shared/Card';
 import { DensityToggle } from '../../components/shared/DensityToggle';
-// import {
-//   emptyCareerThreads,
-//   mockCareerThreads,
-//   mockMetricSwimlanes,
-// } from '../../mock/trajectoryFixtures';
-import type { ZoomLevel } from '../../mock/types';
-import { CareerThreadSection } from './CareerThreadSection';
-import { CodeforcesSnapshotCard } from './CodeforcesSnapshotCard';
-import { LeetCodeSnapshotCard } from './LeetCodeSnapshotCard';
-import { ProjectStatusSection } from './ProjectStatusSection';
-// import { MetricSwimlane } from './MetricSwimlane';
-
-import { TrendingUp } from 'lucide-react';
-
 import { EmptyState } from '../../components/shared/EmptyState';
 import { LoadingState } from '../../components/shared/LoadingState';
-
 import {
   getLatestCodeforcesSnapshot,
   getLatestLeetCodeSnapshot,
-  listProjectStatusSnapshots,
   type CodeforcesSnapshotDto,
   type DsaPracticeLogDto,
-  type ProjectStatusSnapshotDto,
 } from '../../ipc/bindings';
+import type { ZoomLevel } from '../../mock/types';
 import { useBootstrap } from '../../state/bootstrapContext';
+import { CareerThreadSection } from './CareerThreadSection';
+import { CgpaProjectionCard } from './CgpaProjectionCard';
+import { CodeforcesSnapshotCard } from './CodeforcesSnapshotCard';
+import { InternshipTrackerCard } from './InternshipTrackerCard';
+import { LeetCodeSnapshotCard } from './LeetCodeSnapshotCard';
+import { MastersTrackerCard } from './MastersTrackerCard';
 import styles from './Trajectory.module.css';
 import { ZoomToggle } from './ZoomToggle';
 
 /**
- * Trajectory — CGPA/DSA/project trends against target lines at three
- * zoom levels, plus career threads as one section (spec §5.2). Static
- * mock fixtures only this sprint (SPRINT2_SPEC.md §0).
- */
-// export default function Trajectory() {
-//   const [zoom, setZoom] = useState<ZoomLevel>('month');
-//   const [showEmptyThreads, setShowEmptyThreads] = useState(false);
-
-//   return (
-//     <div className={styles.screen}>
-//       <div className={styles.header}>
-//         <p className={`${styles.eyebrow} type-caption`}>Trajectory</p>
-//         <div className={styles.headerControls}>
-//           <ZoomToggle zoom={zoom} onChange={setZoom} />
-//           <DensityToggle />
-//         </div>
-//       </div>
-
-//       <Card>
-//         <div className={styles.metricList}>
-//           {mockMetricSwimlanes.map((metric) => (
-//             <MetricSwimlane key={metric.id} metric={metric} zoom={zoom} />
-//           ))}
-//         </div>
-//       </Card>
-
-//       <section className={styles.section}>
-//         <h2 className={`${styles.sectionTitle} type-body-medium`}>Career threads</h2>
-//         <CareerThreadSection threads={showEmptyThreads ? emptyCareerThreads : mockCareerThreads} />
-//       </section>
-
-//       {import.meta.env.DEV ? (
-//         <button type="button" className={styles.devToggle} onClick={() => setShowEmptyThreads((v) => !v)}>
-//           Dev: toggle career threads empty state
-//         </button>
-//       ) : null}
-//     </div>
-//   );
-// }
-
-
-/**
- * Trajectory — CGPA/DSA/project trends against target lines at three
- * zoom levels, plus career threads as one section (spec §5.2).
+ * Trajectory — long-term trend + goal-tracking screen, built entirely
+ * from real data already returned by `get_bootstrap_state` and the
+ * two connector-snapshot commands below; no mock fixtures.
  *
- * The trend-swimlane section renders the latest Codeforces/LeetCode
- * snapshots when either exists — real current-value reads via
- * `getLatestCodeforcesSnapshot`/`getLatestLeetCodeSnapshot`
- * (07_INTEGRATIONS.md §1.1/§1.2), previously only reachable from
- * `ConnectorsStep.tsx` during onboarding. This is still not the
- * `grade_snapshots`/time-series trend `MetricSwimlane.tsx` was built
- * for — no such table exists yet — so an honest empty state remains
- * the correct render when neither snapshot exists. Career threads are
- * real — `deadlines WHERE category = 'career'` from
- * `get_bootstrap_state`.
+ * - CGPA + target projection: `state.profile.current_cgpa`/`target_cgpa`
+ *   (`03_ONBOARDING.md` §2 fields, previously collected but never
+ *   surfaced back to the user anywhere).
+ * - LeetCode / Codeforces: latest real snapshot via
+ *   `getLatestLeetCodeSnapshot`/`getLatestCodeforcesSnapshot`
+ *   (07_INTEGRATIONS.md §1.1/§1.2).
+ * - Internship + Masters trackers: `state.career_deadlines`
+ *   (`deadlines WHERE category = 'career'`), the same rows the new
+ *   Semester → Career tab writes — titles created there are prefixed
+ *   `"Internship — …"` / `"Placement — …"` / `"Higher studies — …"`,
+ *   which is what these two cards group by.
+ *
+ * The "Linked repos" section has been removed from this screen
+ * completely — no GitHub-activity tracking is part of the current spec
+ * for this screen, and it read from a snapshot table nothing else in
+ * the app populates. Its component (`ProjectStatusSection.tsx`) has
+ * been deleted along with the import; `listProjectStatusSnapshots` /
+ * `ProjectStatusSnapshotDto` remain in `ipc/bindings.ts` as a mirror of
+ * the still-live backend command, in case a future GitHub-activity
+ * feature wants them.
  */
 export default function Trajectory() {
   const [zoom, setZoom] = useState<ZoomLevel>('month');
@@ -93,17 +53,15 @@ export default function Trajectory() {
 
   const [cfSnapshot, setCfSnapshot] = useState<CodeforcesSnapshotDto | null>(null);
   const [lcSnapshot, setLcSnapshot] = useState<DsaPracticeLogDto | null>(null);
-  const [projectSnapshots, setProjectSnapshots] = useState<ProjectStatusSnapshotDto[]>([]);
   const [snapshotsLoading, setSnapshotsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getLatestCodeforcesSnapshot(), getLatestLeetCodeSnapshot(), listProjectStatusSnapshots()])
-      .then(([cf, lc, projects]) => {
+    Promise.all([getLatestCodeforcesSnapshot(), getLatestLeetCodeSnapshot()])
+      .then(([cf, lc]) => {
         if (cancelled) return;
         setCfSnapshot(cf);
         setLcSnapshot(lc);
-        setProjectSnapshots(projects);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -123,6 +81,7 @@ export default function Trajectory() {
   }
 
   const hasSnapshots = cfSnapshot != null || lcSnapshot != null;
+  const careerDeadlines = state?.career_deadlines ?? [];
 
   return (
     <div className={styles.screen}>
@@ -132,6 +91,12 @@ export default function Trajectory() {
           <ZoomToggle zoom={zoom} onChange={setZoom} />
           <DensityToggle />
         </div>
+      </div>
+
+      <div className={styles.grid}>
+        <CgpaProjectionCard profile={state?.profile ?? null} zoom={zoom} />
+        <InternshipTrackerCard deadlines={careerDeadlines} />
+        <MastersTrackerCard profile={state?.profile ?? null} deadlines={careerDeadlines} />
       </div>
 
       <Card>
@@ -145,20 +110,15 @@ export default function Trajectory() {
         ) : (
           <EmptyState
             icon={TrendingUp}
-            title="No trend data tracked yet"
-            description="CGPA, Codeforces rating, and research-hour trends will appear here once they're being logged."
+            title="No DSA practice tracked yet"
+            description="Connect LeetCode or Codeforces from Settings to see your practice trend here."
           />
         )}
       </Card>
 
       <section className={styles.section}>
         <h2 className={`${styles.sectionTitle} type-body-medium`}>Career threads</h2>
-        <CareerThreadSection deadlines={state?.career_deadlines ?? []} />
-      </section>
-
-      <section className={styles.section}>
-        <h2 className={`${styles.sectionTitle} type-body-medium`}>Linked repos</h2>
-        {snapshotsLoading ? <LoadingState shape="list" /> : <ProjectStatusSection snapshots={projectSnapshots} />}
+        <CareerThreadSection deadlines={careerDeadlines} />
       </section>
     </div>
   );

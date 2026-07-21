@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useState } from 'react';
-import { defaultScreenId, routes, type ScreenId } from '../../router';
+import { allRoutes, defaultScreenId, routes, type ScreenId } from '../../router';
 import { DensityProvider } from '../../state/densityContext';
 import { ModalProvider } from '../../state/modalContext';
 import { NavigationProvider } from '../../state/navigationContext';
@@ -41,17 +41,17 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // `routes` is a fixed, non-empty literal (5 screens, see router.tsx), so the
-  // fallback index access is safe; non-null assert to satisfy
+  // `allRoutes` (routes + settingsRoute) is a fixed, non-empty literal, so
+  // the fallback index access is safe; non-null assert to satisfy
   // noUncheckedIndexedAccess (Sprint1 tsconfig) without weakening the type.
-  const ActiveScreen = routes.find((route) => route.id === activeScreen)?.component ?? routes[0]!.component;
+  const ActiveScreen = allRoutes.find((route) => route.id === activeScreen)?.component ?? allRoutes[0]!.component;
 
   return (
     <DensityProvider>
       <ModalProvider>
         <NavigationProvider activeScreen={activeScreen} navigate={navigate}>
           <div className={styles.shell}>
-            {activeScreen !== 'settings' && <TitleBar />}
+            <TitleBar />
             <div className={styles.body}>
               <NavRail activeScreen={activeScreen} onNavigate={navigate} />
               <main className={styles.content} key={activeScreen}>

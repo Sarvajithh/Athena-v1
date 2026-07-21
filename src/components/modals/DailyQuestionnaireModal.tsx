@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { ClipboardList, X } from 'lucide-react';
 import { GlassPanel } from '../shared/GlassPanel';
 import { Icon } from '../shared/Icon';
-import { DailyForm } from '../../screens/Now/RoutineQuestionnaireCard';
+import { DailyConversationForm } from '../../screens/Now/RoutineQuestionnaireCard';
 import { hasDailyRoutineResponse } from '../../ipc/bindings';
+import { useBootstrap } from '../../state/bootstrapContext';
 import styles from './ModalShell.module.css';
 
 /** `YYYY-MM-DD` for the user's local calendar day — same convention as
@@ -22,7 +23,7 @@ interface DailyQuestionnaireModalProps {
  * Opened by `bootstrapContext.tsx`'s `daily-questionnaire-due` event
  * listener (fired by the Rust background trigger in
  * `routine_scheduler.rs`). Reuses `Now/RoutineQuestionnaireCard.tsx`'s
- * exact `DailyForm` — no duplicate form logic, same as
+ * exact `DailyConversationForm` — no duplicate form logic, same as
  * `Settings/RoutineTriggerSection.tsx`'s own manual-trigger reuse.
  *
  * Unlike `ChallengeDialogShell`/`DeepWorkGuardShell` (both
@@ -41,6 +42,7 @@ interface DailyQuestionnaireModalProps {
  * prompt.
  */
 export function DailyQuestionnaireModal({ onDismiss }: DailyQuestionnaireModalProps) {
+  const { state } = useBootstrap();
   const [checked, setChecked] = useState(false);
   const [alreadyAnswered, setAlreadyAnswered] = useState(false);
 
@@ -87,7 +89,7 @@ export function DailyQuestionnaireModal({ onDismiss }: DailyQuestionnaireModalPr
         A couple of quick questions about today — answer now, or dismiss and catch it later on the Now screen or in
         Settings.
       </p>
-      <DailyForm onDone={onDismiss} onCancel={onDismiss} />
+      <DailyConversationForm courses={state?.courses ?? []} onDone={onDismiss} onCancel={onDismiss} />
     </GlassPanel>
   );
 }

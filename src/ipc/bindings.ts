@@ -357,6 +357,30 @@ export async function commitSemesterSetup(input: CommitSemesterSetupInput): Prom
   return invoke<number>("commit_semester_setup", { input });
 }
 
+/** Adds a single course to the *current* semester. Returns the new `courses.id`. */
+export async function addCourseToSemester(input: CourseInput): Promise<number> {
+  return invoke<number>("add_course_to_semester", { input });
+}
+
+export interface DeadlineCandidateInput {
+  course_id: number | null;
+  title: string;
+  category: DeadlineCategory;
+  due_at: string;
+  leverage_class: LeverageClass;
+  notes: string | null;
+}
+
+/** Inserts one or more pulled/normalized deadlines against the current semester. Returns their new `deadlines.id` values. */
+export async function addDeadlinesToSemester(candidates: DeadlineCandidateInput[]): Promise<number[]> {
+  return invoke<number[]>("add_deadlines_to_semester", { candidates });
+}
+
+/** Semester → Advanced → "Seed sample data". Inserts a sample semester, courses, deadlines, and disruptions via the existing repositories, so the planner can be exercised without hand-filling a semester. Returns the new `semesters.id`. */
+export async function seedSampleData(): Promise<number> {
+  return invoke<number>("seed_sample_data");
+}
+
 // ---------------------------------------------------------------------
 // Integrations — mirrors crates/athena-app/src/commands/integrations.rs
 // (07_INTEGRATIONS.md). Every interface below is a 1:1 mirror of a Rust
@@ -693,4 +717,68 @@ export async function deleteHfApiKey(): Promise<void> {
 /** Whether a HF token is currently configured — drives settings UI "connected" state. */
 export async function hasHfApiKey(): Promise<boolean> {
   return invoke<boolean>("has_hf_api_key");
+}
+
+// Gemini API key management (free tier — no billing required).
+// Get a key at https://aistudio.google.com/app/apikey. Once saved, the
+// Gemini provider slots in automatically after Anthropic and before
+// Hugging Face/Ollama. `source` in RecommendationDto will read "gemini".
+
+/** Saves the Gemini API key to the OS keychain. Never stored in SQLite. */
+export async function saveGeminiApiKey(key: string): Promise<void> {
+  return invoke<void>("save_gemini_api_key", { key });
+}
+
+export async function deleteGeminiApiKey(): Promise<void> {
+  return invoke<void>("delete_gemini_api_key");
+}
+
+/** Whether a Gemini key is currently configured — drives settings UI "connected" state. */
+export async function hasGeminiApiKey(): Promise<boolean> {
+  return invoke<boolean>("has_gemini_api_key");
+}
+
+// ---------------------------------------------------------------------
+// Ask Athena — persistent, free-form chat (new capability, additive to
+// the four above). Mirrors `commands::ai::ask_athena_command` /
+// `athena_reasoning::capabilities::ask_athena`. Requires no Verdict and
+// no open deadline — a `RecommendationDto` is still returned so the UI
+// can show the same confidence/provenance affordances every other
+// capability screen already does, but `grounded_in` will always be
+// empty and `confidence` will always be `"insufficient_data"` here,
+// since there's no prior verdict to ground an answer in.
+// ---------------------------------------------------------------------
+
+/** Sends one chat message to Ask Athena and returns its response. Stateless per call — the screen keeps its own scrollback in local state. */
+export async function askAthena(message: string): Promise<RecommendationDto> {
+  return invoke<RecommendationDto>("ask_athena_command", { message });
+}
+
+// ---------------------------------------------------------------------
+// Daily routine check-in as an AI conversation — mirrors
+// `commands::ai::generate_daily_routine_questions` /
+// `extract_daily_routine_answers`
+// (`athena_reasoning::capabilities::routine_conversation`). Replaces
+// the old numeric-slider `DailyForm` in `RoutineQuestionnaireCard.tsx`.
+// The frontend still calls the existing, unmodified
+// `submitDailyRoutineResponse` below with the extracted fields plus
+// today's date — this pair only generates and parses the conversation.
+// ---------------------------------------------------------------------
+
+/** Asks Gemini (or whichever provider is configured) for 3-5 contextual check-in questions. Always returns something, even with zero providers configured (deterministic fallback questions). */
+export async function generateDailyRoutineQuestions(contextSummary: string): Promise<string[]> {
+  return invoke<string[]>("generate_daily_routine_questions", { contextSummary });
+}
+
+export interface DailyRoutineExtractionDto {
+  energy_level: number;
+  hours_available_tonight: number;
+  had_disruption_today: boolean;
+  disruption_note: string | null;
+  focus_rating: number;
+}
+
+/** Converts a free-text question/answer transcript into the fields `SubmitDailyRoutineInput` needs (everything except `date`). Always returns something, even with zero providers configured (neutral defaults). */
+export async function extractDailyRoutineAnswers(transcript: string): Promise<DailyRoutineExtractionDto> {
+  return invoke<DailyRoutineExtractionDto>("extract_daily_routine_answers", { transcript });
 }

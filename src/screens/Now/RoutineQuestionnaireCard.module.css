@@ -135,3 +135,57 @@
 .entryReasoning {
   color: var(--text-secondary);
 }
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.exchange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.athenaBubble {
+  align-self: flex-start;
+  max-width: 90%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.userBubble {
+  align-self: flex-end;
+  max-width: 90%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--accent);
+  color: var(--accent-on);
+  margin: 0;
+}
+
+.composer {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.sendButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: var(--radius-control);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-on);
+  cursor: pointer;
+}
+
+.sendButton:hover {
+  background: var(--accent-hover);
+}
