@@ -111,6 +111,19 @@ pub fn get_bootstrap_state(
 ) -> Result<BootstrapState, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
 
+    // Feature: missed deadlines. `get_bootstrap_state` is the one read
+    // every screen boots from (this file's own module doc comment), so
+    // doing the open->missed sweep here — rather than a separate
+    // lightweight command a single screen would have to remember to
+    // call on mount — means `Now`, `Trajectory`, and `Deadlines` all see
+    // a consistent, already-current `status` with no extra IPC round
+    // trip. Cheap (one indexed comparison over `open` rows) and safe to
+    // run on every read: a deadline that's already `missed` is excluded
+    // by the `status = 'open'` guard, so re-running this never re-flips
+    // anything or races with a concurrent `update_deadline` edit of the
+    // same row's `due_at`.
+    deadline::mark_overdue_as_missed(&conn).map_err(|e| e.to_string())?;
+
     let has_profile = profile::has_profile(&conn).map_err(|e| e.to_string())?;
     let profile_row = profile::get_current_profile(&conn).map_err(|e| e.to_string())?;
     let current_semester = semester::get_current_semester(&conn).map_err(|e| e.to_string())?;

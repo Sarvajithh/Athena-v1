@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { MessageCircle, SendHorizontal } from 'lucide-react';
 import { Icon } from '../../components/shared/Icon';
-import { askAthena, type RecommendationDto } from '../../ipc/bindings';
+import { askAthena, listAskAthenaHistory, saveAskAthenaMessage, type RecommendationDto } from '../../ipc/bindings';
 import styles from './AskAthena.module.css';
 
 interface ChatMessage {
@@ -49,11 +49,17 @@ function sourceLabel(source: string): string {
  * uses — so this screen is never "AI unavailable," it just falls back
  * to a plainer, still-honest response.
  *
- * Chat history is local component state only (Reflection Engine's own
- * spec explicitly rejects persistent conversational memory for the
- * "why?" follow-up mode — the same reasoning applies here: each call to
- * `askAthena` is independent, and re-grounding never depends on prior
- * turns). Refreshing or navigating away clears the scrollback.
+ * Chat history is persisted across sessions (V9 migration,
+ * `ask_athena_messages` table via `saveAskAthenaMessage`/
+ * `listAskAthenaHistory`) — this overrides the screen's original
+ * design, which followed the Reflection Engine's own spec rejecting
+ * persistent conversational memory for the "why?" follow-up mode.
+ * That reasoning still holds for *grounding*: each call to `askAthena`
+ * remains independent and re-grounding never depends on prior turns
+ * (`athena_reasoning::capabilities::ask_athena` is unchanged). Only the
+ * *scrollback* is now durable — persistence here is purely a rendering
+ * convenience for the user, layered on top of the existing
+ * optimistic-UI flow (`setMessages`), never a new input to grounding.
  */
 export default function AskAthena() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -61,6 +67,36 @@ export default function AskAthena() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Load the most recent ~50 persisted messages on mount so the
+  // scrollback survives a refresh/restart. No pagination UI yet — see
+  // the module doc comment. A failure here is non-fatal: the screen
+  // just starts with an empty scrollback, same as before persistence
+  // existed, rather than blocking the composer.
+  useEffect(() => {
+    let cancelled = false;
+    listAskAthenaHistory(50)
+      .then((history) => {
+        if (cancelled) return;
+        setMessages(
+          history.map((row) => ({
+            id: `history-${row.id}`,
+            role: row.role,
+            text: row.text,
+            meta:
+              row.role === 'athena' && row.source && row.confidence
+                ? { source: row.source, confidence: row.confidence as RecommendationDto['confidence'] }
+                : undefined,
+          })),
+        );
+      })
+      .catch(() => {
+        // Non-fatal — see comment above.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -75,6 +111,10 @@ export default function AskAthena() {
 
     const userMessage: ChatMessage = { id: newId(), role: 'user', text };
     setMessages((prev) => [...prev, userMessage]);
+    // Fire-and-forget: persistence is additive to the optimistic UI
+    // above, never a gate on it. A save failure shouldn't block the
+    // user from seeing their own message or from Athena replying.
+    void saveAskAthenaMessage({ role: 'user', text });
     setDraft('');
     setSending(true);
     setError(null);
@@ -91,6 +131,12 @@ export default function AskAthena() {
           meta: { source: response.source, confidence: response.confidence },
         },
       ]);
+      void saveAskAthenaMessage({
+        role: 'athena',
+        text: response.reasoning,
+        source: response.source,
+        confidence: response.confidence,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong reaching Athena.');
     } finally {

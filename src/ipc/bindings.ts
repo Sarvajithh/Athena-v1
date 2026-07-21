@@ -371,6 +371,25 @@ export interface DeadlineCandidateInput {
   notes: string | null;
 }
 
+/** Mirrors `UpdateDeadlineInput` (`commands::deadlines`) — everything Feature 1's edit affordance may change. No `id`/`semester_id`/`course_id`/`status`. */
+export interface UpdateDeadlineInput {
+  title: string;
+  category: DeadlineCategory;
+  due_at: string;
+  leverage_class: LeverageClass;
+  notes: string | null;
+}
+
+/** Edits one existing deadline in place. Returns the row as it now stands. */
+export async function updateDeadline(id: number, input: UpdateDeadlineInput): Promise<DeadlineRow> {
+  return invoke<DeadlineRow>("update_deadline", { id, input });
+}
+
+/** Deletes one deadline outright. Returns `false` if `id` was already gone rather than throwing. */
+export async function deleteDeadline(id: number): Promise<boolean> {
+  return invoke<boolean>("delete_deadline", { id });
+}
+
 /** Inserts one or more pulled/normalized deadlines against the current semester. Returns their new `deadlines.id` values. */
 export async function addDeadlinesToSemester(candidates: DeadlineCandidateInput[]): Promise<number[]> {
   return invoke<number[]>("add_deadlines_to_semester", { candidates });
@@ -629,6 +648,31 @@ export async function importCalendarIcs(icsContent: string): Promise<ParsedDeadl
   return invoke<ParsedDeadlineDto[]>("import_calendar_ics", { icsContent });
 }
 
+// --- Deadline extraction from already-synced connector data (§1.8/§1.9/§1.10 amendment) ---
+//
+// Same "extraction always ends in a confirmation step, never
+// auto-commits" rule as calendar/PDF/CSV import above, and the same
+// `ParsedDeadlineDto` shape — these three read only the snapshot tables
+// already populated by `listGmailMessages`/`listClassroomCoursework`/
+// `listNotionPages` (no new network calls), apply simple heuristic
+// due-date extraction, and hand back candidates for the "Pull deadlines"
+// screen to review/edit before calling the existing `addDeadlinesToSemester`.
+
+/** Heuristically parses due dates out of already-synced Gmail message subjects/snippets. No network call — reads `gmail_message_snapshots`. */
+export async function extractDeadlinesFromGmail(): Promise<ParsedDeadlineDto[]> {
+  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_gmail");
+}
+
+/** Classroom coursework already carries a `due_at` field, so this is close to a straight mapping rather than text heuristics. No network call — reads `classroom_coursework`. */
+export async function extractDeadlinesFromClassroom(): Promise<ParsedDeadlineDto[]> {
+  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_classroom");
+}
+
+/** Heuristically parses due dates out of already-synced Notion page titles. No network call — reads `notion_pages`. */
+export async function extractDeadlinesFromNotion(): Promise<ParsedDeadlineDto[]> {
+  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_notion");
+}
+
 export interface CsvRowDto {
   cells: Record<string, string>;
 }
@@ -781,4 +825,41 @@ export interface DailyRoutineExtractionDto {
 /** Converts a free-text question/answer transcript into the fields `SubmitDailyRoutineInput` needs (everything except `date`). Always returns something, even with zero providers configured (neutral defaults). */
 export async function extractDailyRoutineAnswers(transcript: string): Promise<DailyRoutineExtractionDto> {
   return invoke<DailyRoutineExtractionDto>("extract_daily_routine_answers", { transcript });
+}
+
+// ---------------------------------------------------------------------
+// Ask Athena chat history persistence (V9 migration). Mirrors
+// `commands::ai::AskAthenaMessageDto` / `save_ask_athena_message` /
+// `list_ask_athena_history` field-for-field. Additive alongside
+// `askAthena` above and the screen's existing local `messages` state —
+// `AskAthena.tsx` calls `saveAskAthenaMessage` right alongside each
+// `setMessages` call (once for the user's turn, once for Athena's
+// reply) and calls `listAskAthenaHistory` once on mount to repopulate
+// the scrollback across sessions.
+// ---------------------------------------------------------------------
+
+export interface AskAthenaMessageDto {
+  id: number;
+  role: "user" | "athena";
+  text: string;
+  source: string | null;
+  confidence: string | null;
+  created_at: string;
+}
+
+export interface SaveAskAthenaMessageInput {
+  role: "user" | "athena";
+  text: string;
+  source?: string | null;
+  confidence?: string | null;
+}
+
+/** Persists one chat bubble (user turn or Athena reply). */
+export async function saveAskAthenaMessage(input: SaveAskAthenaMessageInput): Promise<AskAthenaMessageDto> {
+  return invoke<AskAthenaMessageDto>("save_ask_athena_message", { input });
+}
+
+/** Most recent `limit` chat messages, oldest first — used to repopulate the scrollback on mount. */
+export async function listAskAthenaHistory(limit = 50): Promise<AskAthenaMessageDto[]> {
+  return invoke<AskAthenaMessageDto[]>("list_ask_athena_history", { limit });
 }

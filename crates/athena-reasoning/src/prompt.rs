@@ -57,8 +57,29 @@ impl PromptBuilder {
 
         let evidence_json = serde_json::to_string(&payload.evidence).unwrap_or_else(|_| "[]".to_string());
 
+        // Stage 5's grounding check treats any citation ID outside the
+        // evidence set as a failure (pipeline.rs's `grounded_recommendation`).
+        // When the evidence set is empty (e.g. every `ask_athena` call —
+        // there is never a Stage 2 verdict to ground against), the schema
+        // alone doesn't make it obvious to the model that `citations` must
+        // then be `[]`; models frequently hallucinate a placeholder ID
+        // instead, which fails grounding on both the first attempt and the
+        // stricter retry and silently degrades every response to the
+        // generic template fallback. Spelling this out explicitly here
+        // fixes it before the first attempt instead of relying on a retry
+        // to catch it after the fact.
+        let system = if payload.evidence.is_empty() {
+            format!(
+                "{PERSONA} There is no evidence for this request — the evidence JSON below is `[]`. \
+                 You MUST return \"citations\": []. Do not invent, guess, or reuse an ID; any \
+                 non-empty citations array here will be rejected."
+            )
+        } else {
+            PERSONA.to_string()
+        };
+
         PromptRequest {
-            system: PERSONA.to_string(),
+            system,
             verdict_json,
             evidence_json,
             output_schema: OUTPUT_SCHEMA.to_string(),
@@ -92,6 +113,38 @@ mod tests {
         assert!(request.evidence_json.contains("\"id\":7"));
         assert!(!request.stricter);
         assert!(request.question.is_none());
+    }
+
+    #[test]
+    fn empty_evidence_instructs_the_model_to_return_empty_citations() {
+        let payload = EvidencePayload {
+            capability: "ask_athena",
+            verdict_headline: "Ask Athena".into(),
+            verdict_reasoning: "Free-form question, no Decision Engine verdict to restate.".into(),
+            confidence: "insufficient_data",
+            evidence: vec![],
+            data_freshness_note: "as of now".into(),
+        };
+        let request = PromptBuilder::build(&payload, Some("what should I prioritize?".into()));
+        assert!(request.system.contains("\"citations\": []"));
+    }
+
+    #[test]
+    fn non_empty_evidence_does_not_add_the_empty_citations_instruction() {
+        let payload = EvidencePayload {
+            capability: "daily_briefing",
+            verdict_headline: "Work on: X".into(),
+            verdict_reasoning: "because Y".into(),
+            confidence: "inferred",
+            evidence: vec![EvidenceItem {
+                id: 7,
+                label: "top_priority_deadline".into(),
+                value: "X".into(),
+            }],
+            data_freshness_note: "as of now".into(),
+        };
+        let request = PromptBuilder::build(&payload, None);
+        assert!(!request.system.contains("\"citations\": []"));
     }
 
     #[test]

@@ -7,6 +7,7 @@
 //! computes one of its own.
 pub mod ai;
 pub mod bootstrap;
+pub mod deadlines;
 pub mod integrations;
 pub mod onboarding;
 pub mod planner;

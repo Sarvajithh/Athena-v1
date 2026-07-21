@@ -94,35 +94,52 @@ fn build_providers() -> Vec<Box<dyn LlmProvider>> {
     let mut providers: Vec<Box<dyn LlmProvider>> = Vec::new();
 
     // 1. Anthropic Claude — paid, cloud, fastest
-    if let Ok(Some(api_key)) = keychain::get_anthropic_api_key() {
-        providers.push(Box::new(AnthropicProvider::new(
-            api_key,
-            DEFAULT_ANTHROPIC_MODEL.to_string(),
-        )));
+    match keychain::get_anthropic_api_key() {
+        Ok(Some(api_key)) => {
+            tracing::debug!(event = "cascade_step", provider = "anthropic", "key found, adding to cascade");
+            providers.push(Box::new(AnthropicProvider::new(
+                api_key,
+                DEFAULT_ANTHROPIC_MODEL.to_string(),
+            )));
+        }
+        Ok(None) => tracing::debug!(event = "cascade_step", provider = "anthropic", "no key saved, skipping"),
+        Err(e) => tracing::debug!(event = "cascade_step", provider = "anthropic", error = %e, "key lookup failed, skipping"),
     }
 
     // 2. Google Gemini — free tier, cloud, no billing required
-    if let Ok(Some(api_key)) = keychain::get_gemini_api_key() {
-        providers.push(Box::new(GeminiProvider::new(
-            api_key,
-            DEFAULT_GEMINI_MODEL.to_string(),
-        )));
+    match keychain::get_gemini_api_key() {
+        Ok(Some(api_key)) => {
+            tracing::debug!(event = "cascade_step", provider = "gemini", "key found, adding to cascade");
+            providers.push(Box::new(GeminiProvider::new(
+                api_key,
+                DEFAULT_GEMINI_MODEL.to_string(),
+            )));
+        }
+        Ok(None) => tracing::debug!(event = "cascade_step", provider = "gemini", "no key saved, skipping"),
+        Err(e) => tracing::debug!(event = "cascade_step", provider = "gemini", error = %e, "key lookup failed, skipping"),
     }
 
     // 3. Hugging Face — free tier, cloud, no billing required
-    if let Ok(Some(token)) = keychain::get_hf_api_token() {
-        providers.push(Box::new(HuggingFaceProvider::new(
-            token,
-            DEFAULT_HF_MODEL.to_string(),
-        )));
+    match keychain::get_hf_api_token() {
+        Ok(Some(token)) => {
+            tracing::debug!(event = "cascade_step", provider = "huggingface", "token found, adding to cascade");
+            providers.push(Box::new(HuggingFaceProvider::new(
+                token,
+                DEFAULT_HF_MODEL.to_string(),
+            )));
+        }
+        Ok(None) => tracing::debug!(event = "cascade_step", provider = "huggingface", "no token saved, skipping"),
+        Err(e) => tracing::debug!(event = "cascade_step", provider = "huggingface", error = %e, "token lookup failed, skipping"),
     }
 
     // 4. Ollama — local, always in the list; ProviderUnavailable if not running
+    tracing::debug!(event = "cascade_step", provider = "ollama", "always added, local fallback");
     providers.push(Box::new(OllamaProvider::new(
         DEFAULT_OLLAMA_BASE_URL.to_string(),
         DEFAULT_OLLAMA_MODEL.to_string(),
     )));
 
+    tracing::debug!(event = "cascade_built", provider_count = providers.len(), "provider cascade built");
     providers
 }
 
@@ -322,6 +339,103 @@ pub async fn ask_athena_command(message: String) -> Result<Recommendation, Strin
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------
+// Ask Athena chat history (V9 migration, additive) — persists the
+// screen's scrollback across sessions. Mirrors `commands::routine`'s
+// submit/fetch shape (typed input struct in, typed DTO out,
+// `Mutex<Connection>` state) rather than `ask_athena_command` above:
+// this is a plain repository read/write, not a Synthesizer call, so it
+// stays synchronous and needs no `spawn_blocking` — same reasoning
+// `commands::routine::submit_daily_routine_response` already applies
+// to its own DB-only commands.
+// ---------------------------------------------------------------------
+
+/// One persisted chat bubble. Mirrors
+/// `athena_data::repositories::ask_athena_history::AskAthenaMessageRow`
+/// field-for-field — `source`/`confidence` are `None` on `role: "user"`
+/// rows, matching `ChatMessage.meta` being optional client-side
+/// (`screens/AskAthena/index.tsx`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AskAthenaMessageDto {
+    pub id: i64,
+    pub role: String,
+    pub text: String,
+    pub source: Option<String>,
+    pub confidence: Option<String>,
+    pub created_at: String,
+}
+
+fn ask_athena_message_to_dto(
+    row: athena_data::repositories::ask_athena_history::AskAthenaMessageRow,
+) -> AskAthenaMessageDto {
+    AskAthenaMessageDto {
+        id: row.id,
+        role: row.role,
+        text: row.text,
+        source: row.source,
+        confidence: row.confidence,
+        created_at: row.created_at,
+    }
+}
+
+/// Typed input for `save_ask_athena_message` — `role` is validated at
+/// the schema level (V9's `CHECK (role IN ('user', 'athena'))`), so an
+/// invalid value here surfaces as a normal `Result::Err` from the
+/// insert rather than needing a second check in this file.
+#[derive(Debug, serde::Deserialize)]
+pub struct SaveAskAthenaMessageInput {
+    pub role: String,
+    pub text: String,
+    pub source: Option<String>,
+    pub confidence: Option<String>,
+}
+
+/// Persists one chat bubble (called once for the user's message and
+/// once for Athena's reply — see `AskAthena.tsx`). Additive to the
+/// existing optimistic local `setMessages` flow, never a replacement
+/// for it: the frontend still renders from local state immediately and
+/// this call just makes the same turn durable across a refresh/restart.
+#[tauri::command]
+pub fn save_ask_athena_message(
+    db: State<'_, Mutex<Connection>>,
+    input: SaveAskAthenaMessageInput,
+) -> Result<AskAthenaMessageDto, String> {
+    use athena_data::repositories::ask_athena_history;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let id = ask_athena_history::insert_message(
+        &conn,
+        &ask_athena_history::NewAskAthenaMessage {
+            role: input.role,
+            text: input.text,
+            source: input.source,
+            confidence: input.confidence,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+
+    let recent = ask_athena_history::list_recent_messages(&conn, 1).map_err(|e| e.to_string())?;
+    recent
+        .into_iter()
+        .find(|r| r.id == id)
+        .map(ask_athena_message_to_dto)
+        .ok_or_else(|| "Ask Athena message vanished immediately after insert.".to_string())
+}
+
+/// Most recent `limit` chat messages, oldest first — what
+/// `AskAthena.tsx` loads on mount to repopulate its scrollback.
+#[tauri::command]
+pub fn list_ask_athena_history(
+    db: State<'_, Mutex<Connection>>,
+    limit: i64,
+) -> Result<Vec<AskAthenaMessageDto>, String> {
+    use athena_data::repositories::ask_athena_history;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = ask_athena_history::list_recent_messages(&conn, limit).map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(ask_athena_message_to_dto).collect())
 }
 
 // ---------------------------------------------------------------------

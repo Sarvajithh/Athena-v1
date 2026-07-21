@@ -130,3 +130,157 @@
 .row[data-urgency='today'] .rowDue {
   color: var(--severity-flag);
 }
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tab {
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-secondary);
+}
+
+.tab[data-active='true'] {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+.warning {
+  color: var(--severity-flag);
+}
+
+.editButton {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-3);
+  font-family: var(--font-family);
+  font-size: var(--type-caption-size);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.editButton:hover {
+  color: var(--text-primary);
+}
+
+.rowActions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.removeButton {
+  background: none;
+  border: 1px solid var(--severity-urgent);
+  color: var(--severity-urgent);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-3);
+  font-family: var(--font-family);
+  font-size: var(--type-caption-size);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.removeButton:hover:not(:disabled) {
+  background: var(--severity-urgent);
+  color: var(--accent-on);
+}
+
+.removeButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirmDelete {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.editForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  width: 100%;
+}
+
+.editFieldRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.editFieldRow > * {
+  flex: 1;
+  min-width: 140px;
+}
+
+.editActions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.input {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-family);
+  font-size: var(--type-body-size);
+}
+
+.input:focus {
+  border-color: var(--accent);
+}
+
+.error {
+  color: var(--severity-urgent);
+}
+
+.primaryButton {
+  background: var(--accent);
+  color: var(--accent-on);
+  border: none;
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-5);
+  font-family: var(--font-family);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.primaryButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondaryButton {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-family);
+  cursor: pointer;
+}

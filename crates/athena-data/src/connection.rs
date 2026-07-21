@@ -65,8 +65,8 @@ mod tests {
             .expect("query refinery_schema_history");
         assert_eq!(
             applied,
-            8,
-            "exactly 8 migrations should be recorded as applied"
+            9,
+            "exactly 9 migrations should be recorded as applied"
         );
 
         // MT-6 / Acceptance Criterion #4 (Objective 4, extended by V4's
@@ -84,7 +84,7 @@ mod tests {
             .expect("query sqlite_master");
         assert_eq!(
             domain_tables,
-            20,
+            21,
             "all expected domain tables should exist after migrations"
         );
     }

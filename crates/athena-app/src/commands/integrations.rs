@@ -1221,6 +1221,166 @@ pub fn preview_pdf_import(
         .collect())
 }
 
+// ---------------------------------------------------------------------
+// Deadline extraction from already-synced connector data
+// (§1.8/§1.9/§1.10 amendment)
+// ---------------------------------------------------------------------
+//
+// Same "extraction always ends in a confirmation step, never
+// auto-commits" rule as `import_calendar_ics`/`preview_csv_import`/
+// `preview_pdf_import` above, and the same `ParsedDeadlineDto` return
+// shape — no new DTO needed, since a Gmail/Classroom/Notion candidate
+// fits it exactly. These three commands do no network or sync work of
+// their own; they only read rows `list_gmail_messages`/
+// `list_classroom_coursework`/`list_notion_pages` already expose, so
+// they never need the two-step "mark_syncing then mark_synced_*"
+// dance those commands do — there is no `data_sources` status to update
+// for a read-only, local-only transformation of data already marked
+// synced by its own connector.
+
+/// Scans free text for the first date-shaped substring it can find —
+/// `YYYY-MM-DD` or `MM/DD/YYYY` — and returns it as a `due_at` in the
+/// same `YYYY-MM-DDTHH:MM:SS` shape every other `due_at` in this schema
+/// uses, defaulting to end-of-day (`23:59:00`) since free text almost
+/// never states a time. No `regex` dependency pulled in for this one
+/// heuristic (same reasoning as this file's own hand-rolled
+/// `decode_base64`/`civil_from_days` helpers) — a hand-scanned digit
+/// pattern is enough for "simple heuristic extraction," not a full NLP
+/// date parser.
+fn find_date_in_text(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let is_digit = |b: u8| b.is_ascii_digit();
+
+    // Pattern 1: YYYY-MM-DD (ISO-shaped, e.g. calendar exports, receipts).
+    // Scanned over raw bytes (not `&text[i..i+10]`) so a multi-byte
+    // UTF-8 character anywhere in `text` can never land on a non-char-
+    // boundary slice and panic — subject lines/snippets are arbitrary
+    // user text, not guaranteed ASCII.
+    let mut i = 0;
+    while i + 10 <= bytes.len() {
+        let wb = &bytes[i..i + 10];
+        if is_digit(wb[0]) && is_digit(wb[1]) && is_digit(wb[2]) && is_digit(wb[3])
+            && wb[4] == b'-'
+            && is_digit(wb[5]) && is_digit(wb[6])
+            && wb[7] == b'-'
+            && is_digit(wb[8]) && is_digit(wb[9])
+        {
+            // All ten bytes are verified ASCII digits/dashes above, so
+            // this slice is guaranteed to be valid UTF-8 on its own —
+            // safe to re-slice `text` at these same byte offsets.
+            let window = std::str::from_utf8(wb).unwrap_or("");
+            let year: u32 = window[0..4].parse().unwrap_or(0);
+            let month: u32 = window[5..7].parse().unwrap_or(0);
+            let day: u32 = window[8..10].parse().unwrap_or(0);
+            if (1..=12).contains(&month) && (1..=31).contains(&day) && year >= 2000 {
+                return Some(format!("{year:04}-{month:02}-{day:02}T23:59:00"));
+            }
+        }
+        i += 1;
+    }
+
+    // Pattern 2: MM/DD/YYYY (common in US-formatted email/page text).
+    let parts: Vec<&str> = text.split(|c: char| !c.is_ascii_digit() && c != '/').collect();
+    for part in parts {
+        let segments: Vec<&str> = part.split('/').collect();
+        if segments.len() == 3 {
+            if let (Ok(month), Ok(day), Ok(year)) =
+                (segments[0].parse::<u32>(), segments[1].parse::<u32>(), segments[2].parse::<u32>())
+            {
+                let year = if year < 100 { 2000 + year } else { year };
+                if (1..=12).contains(&month) && (1..=31).contains(&day) && year >= 2000 {
+                    return Some(format!("{year:04}-{month:02}-{day:02}T23:59:00"));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Gmail messages carry no structured due date, so this is genuine text
+/// heuristics over the subject + snippet already synced into
+/// `gmail_message_snapshots` — a message with no date-shaped text in
+/// either is simply skipped (the person can still add it by hand via
+/// the existing manual deadline form; this command only surfaces the
+/// ones it can confidently date).
+#[tauri::command]
+pub fn extract_deadlines_from_gmail(db: State<'_, Mutex<Connection>>) -> Result<Vec<ParsedDeadlineDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_gmail_message_snapshots(&conn).map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|m| {
+            let haystack = format!(
+                "{} {}",
+                m.subject.as_deref().unwrap_or(""),
+                m.snippet.as_deref().unwrap_or("")
+            );
+            find_date_in_text(&haystack).map(|due_at| ParsedDeadlineDto {
+                title: m.subject.unwrap_or_else(|| "(no subject)".to_string()),
+                category: "other".to_string(),
+                due_at,
+                leverage_class: "medium".to_string(),
+                notes: m.snippet,
+            })
+        })
+        .collect())
+}
+
+/// Classroom coursework already carries a structured `due_at` (set by
+/// the Classroom API itself), so this is close to a straight mapping —
+/// the one heuristic is skipping coursework the API returned with no
+/// due date at all, since `ParsedDeadlineDto::due_at` is non-optional
+/// (same "candidates the person can confidently date" reasoning as
+/// Gmail's version above).
+#[tauri::command]
+pub fn extract_deadlines_from_classroom(
+    db: State<'_, Mutex<Connection>>,
+) -> Result<Vec<ParsedDeadlineDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_classroom_coursework(&conn).map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|cw| {
+            cw.due_at.map(|due_at| ParsedDeadlineDto {
+                title: cw.title,
+                category: "academic".to_string(),
+                due_at,
+                leverage_class: "medium".to_string(),
+                notes: None,
+            })
+        })
+        .collect())
+}
+
+/// Notion pages carry no body text in their synced shape (`notion_pages`
+/// only stores `title`/`url`/`parent_database_id`/`last_edited_at` —
+/// see `NotionPageRow`), so the only text available to heuristically
+/// scan is the page title itself (e.g. a page titled "Essay draft due
+/// 2026-09-01"). Pages whose title has no date-shaped text are skipped,
+/// same reasoning as Gmail's version above.
+#[tauri::command]
+pub fn extract_deadlines_from_notion(db: State<'_, Mutex<Connection>>) -> Result<Vec<ParsedDeadlineDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_notion_pages(&conn).map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|p| {
+            let title = p.title.unwrap_or_else(|| "(untitled page)".to_string());
+            find_date_in_text(&title).map(|due_at| ParsedDeadlineDto {
+                title: title.clone(),
+                category: "other".to_string(),
+                due_at,
+                leverage_class: "medium".to_string(),
+                notes: p.url,
+            })
+        })
+        .collect())
+}
+
 /// Minimal base64 decoder (standard alphabet, `=` padding) — avoids
 /// pulling in the `base64` crate for the one call site this command
 /// needs (Implementation Plan §4, same reasoning as

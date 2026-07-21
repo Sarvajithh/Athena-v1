@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import {
   addDeadlinesToSemester,
-  listClassroomAnnouncements,
-  listClassroomCoursework,
-  listGmailMessages,
-  listNotionPages,
+  extractDeadlinesFromClassroom,
+  extractDeadlinesFromGmail,
+  extractDeadlinesFromNotion,
   type DeadlineCandidateInput,
   type DeadlineCategory,
 } from '../../ipc/bindings';
@@ -24,21 +23,37 @@ interface Candidate {
   include: boolean;
   title: string;
   category: DeadlineCategory;
-  /** `YYYY-MM-DDTHH:MM`, or '' if the source gave no date and the user must pick one. */
+  /** `YYYY-MM-DDTHH:MM`, or '' if extraction found no date and the user must pick one. */
   dueAt: string;
   notes: string | null;
 }
 
 /**
  * Semester screen's "Pull deadlines" action (workflow reform brief,
- * Part 1, item 3). Calls only the already-wired read commands
- * (`list_gmail_messages`, `list_classroom_coursework`,
- * `list_classroom_announcements`, `list_notion_pages`) — no new sync
- * logic — and normalizes whatever comes back into reviewable, editable
- * `deadlines` candidates. Gmail/Notion carry no due date in their
- * synced shape, so those rows start with an empty date the user fills
- * in before including them; Classroom coursework already has `due_at`
- * when the source provided one.
+ * Part 1, item 3) — kept as a sub-view inside Semester rather than
+ * promoted to a new top-level route. Reasoning: `routes.tsx` registers
+ * a top-level screen per *destination* a person navigates to on its own
+ * (Now, Deadlines, Semester, Trajectory, Settings, ...); "pull
+ * deadlines" isn't a destination, it's one action *within* managing a
+ * semester's deadlines, the same way `CareerTab`'s "add a career goal"
+ * form is a sub-view rather than its own route. It also already sits
+ * next to the same semester-scoped state (`refresh`/`onAdded`) this
+ * panel needs, and `Deadlines` (the browsing/editing screen) already
+ * points here via its own empty-state copy ("Pull deadlines from a
+ * connector in Semester") — moving it would break that cross-reference
+ * for no navigational benefit.
+ *
+ * Calls the new heuristic extraction commands
+ * (`extract_deadlines_from_gmail/_classroom/_notion` — Feature 3),
+ * which read only the already-synced snapshot tables (no new network
+ * calls) and return `ParsedDeadlineDto[]`, the same shape
+ * `import_calendar_ics` already returns for calendar import. Extraction
+ * pre-fills `due_at` wherever its heuristic could find a date (always,
+ * for Classroom, since coursework already carries a structured
+ * `due_at`; sometimes, for Gmail/Notion, which only have free text to
+ * scan) — the person can still edit or clear any field before
+ * including a row, same "extraction always ends in a confirmation
+ * step, never auto-commits" rule as calendar/PDF/CSV import.
  */
 export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<void> }) {
   const [connector, setConnector] = useState<ConnectorKey>('google_classroom');
@@ -51,50 +66,24 @@ export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<
     setPulling(true);
     setError(null);
     try {
-      let rows: Candidate[] = [];
-      if (connector === 'gmail') {
-        const messages = await listGmailMessages();
-        rows = messages.map((m) => ({
-          key: `gmail-${m.message_id}`,
-          include: false,
-          title: m.subject?.trim() || '(no subject)',
-          category: 'other' as DeadlineCategory,
-          dueAt: '',
-          notes: m.snippet ?? null,
-        }));
-      } else if (connector === 'notion') {
-        const pages = await listNotionPages();
-        rows = pages.map((p) => ({
-          key: `notion-${p.page_id}`,
-          include: false,
-          title: p.title?.trim() || '(untitled page)',
-          category: 'other' as DeadlineCategory,
-          dueAt: '',
-          notes: p.url,
-        }));
-      } else {
-        const [coursework, announcements] = await Promise.all([
-          listClassroomCoursework(),
-          listClassroomAnnouncements(),
-        ]);
-        const courseworkRows: Candidate[] = coursework.map((c) => ({
-          key: `coursework-${c.coursework_id}`,
-          include: Boolean(c.due_at),
-          title: c.title,
-          category: 'academic' as DeadlineCategory,
-          dueAt: c.due_at ?? '',
-          notes: null,
-        }));
-        const announcementRows: Candidate[] = announcements.map((a) => ({
-          key: `announcement-${a.announcement_id}`,
-          include: false,
-          title: a.text?.trim() ? a.text.slice(0, 80) : '(announcement)',
-          category: 'other' as DeadlineCategory,
-          dueAt: '',
-          notes: null,
-        }));
-        rows = [...courseworkRows, ...announcementRows];
-      }
+      const parsed =
+        connector === 'gmail'
+          ? await extractDeadlinesFromGmail()
+          : connector === 'notion'
+            ? await extractDeadlinesFromNotion()
+            : await extractDeadlinesFromClassroom();
+
+      const rows: Candidate[] = parsed.map((p, i) => ({
+        key: `${connector}-${i}-${p.title}`,
+        // Pre-checked only when extraction already found a usable due
+        // date — same "ready to include" bar `includedReady` below
+        // enforces for a manually-added row.
+        include: Boolean(p.due_at),
+        title: p.title,
+        category: p.category,
+        dueAt: p.due_at ? p.due_at.slice(0, 16) : '',
+        notes: p.notes,
+      }));
       setCandidates(rows);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

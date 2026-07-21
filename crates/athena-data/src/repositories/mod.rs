@@ -10,6 +10,7 @@
 //! those seven tables are one aggregate in practice (sync status + the
 //! typed data it produces), not seven independent domain concepts.
 
+pub mod ask_athena_history;
 pub mod course;
 pub mod deadline;
 pub mod decision;

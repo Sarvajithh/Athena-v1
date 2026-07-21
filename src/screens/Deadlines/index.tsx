@@ -1,13 +1,16 @@
+import { useState } from 'react';
 import { CalendarClock } from 'lucide-react';
 import { Card } from '../../components/shared/Card';
 import { DensityToggle } from '../../components/shared/DensityToggle';
 import { EmptyState } from '../../components/shared/EmptyState';
 import { LoadingState } from '../../components/shared/LoadingState';
 import { useBootstrap } from '../../state/bootstrapContext';
-import type { DeadlineRow } from '../../ipc/bindings';
+import { CATEGORY_OPTIONS, LEVERAGE_OPTIONS } from '../SemesterSetup/types';
+import { updateDeadline, deleteDeadline, type DeadlineCategory, type DeadlineRow, type LeverageClass } from '../../ipc/bindings';
 import styles from './Deadlines.module.css';
 
 type Urgency = 'overdue' | 'today' | 'this-week' | 'upcoming' | 'done';
+type DeadlinesTab = 'open' | 'missed';
 
 interface DeadlineGroup {
   key: string;
@@ -94,19 +97,247 @@ function formatDate(dueAt: string): string {
   return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+/** `due_at` as stored (`YYYY-MM-DDTHH:MM:SS`) truncated to the `datetime-local` input's expected `YYYY-MM-DDTHH:MM`. */
+function toDatetimeLocalValue(dueAt: string): string {
+  return dueAt.length >= 16 ? dueAt.slice(0, 16) : dueAt;
+}
+
+/** Editable fields for one row, mirroring `UpdateDeadlineInput` (`ipc/bindings.ts`) — no `id`/`semester_id`/`course_id`/`status`. */
+interface EditState {
+  title: string;
+  category: DeadlineCategory;
+  due_at: string;
+  leverage_class: LeverageClass;
+  notes: string;
+}
+
+function editStateFrom(d: DeadlineRow): EditState {
+  return {
+    title: d.title,
+    category: d.category,
+    due_at: toDatetimeLocalValue(d.due_at),
+    leverage_class: d.leverage_class,
+    notes: d.notes ?? '',
+  };
+}
+
+/**
+ * One deadline row, with Feature 1's inline edit affordance. Matches
+ * `ApiKeyPanel.tsx`/`ConnectorsSection.tsx`'s closest edit-form
+ * precedent in this repo: a plain-text display state that swaps in
+ * place for a small form on "Edit," with its own Save/Cancel and
+ * inline error line (`styles.error`, the same class every other
+ * screen's inline error uses) — no modal, since every other editable
+ * surface in this app edits inline rather than in an overlay.
+ */
+function DeadlineRowItem({
+  deadline,
+  urgency,
+  onSaved,
+  allowEdit = true,
+}: {
+  deadline: DeadlineRow;
+  urgency: Urgency;
+  onSaved: () => void | Promise<void>;
+  /** `false` for the Missed tab — a missed deadline's fields aren't editable in place, only deletable. */
+  allowEdit?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<EditState>(() => editStateFrom(deadline));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const startEdit = () => {
+    setForm(editStateFrom(deadline));
+    setError(null);
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setError(null);
+  };
+
+  const handleDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteDeadline(deadline.id);
+      await onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
+  };
+
+  const save = async () => {
+    if (!form.title.trim() || !form.due_at || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await updateDeadline(deadline.id, {
+        title: form.title.trim(),
+        category: form.category,
+        due_at: form.due_at,
+        leverage_class: form.leverage_class,
+        notes: form.notes.trim() || null,
+      });
+      setEditing(false);
+      await onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Feature 2's approaching/just-past-due warning — reuses the same
+  // `--severity-*`-driven `data-urgency` styling this screen already
+  // uses for overdue/today grouping (see `Deadlines.module.css`), and
+  // the same inline `<p className={styles.error}>` caption pattern
+  // `ConnectorsSection.tsx`/`ApiKeyPanel.tsx` use for sync errors,
+  // rather than inventing a new toast component. Shown for anything due
+  // today or already overdue that `get_bootstrap_state`'s
+  // `mark_overdue_as_missed` sweep hasn't yet caught up with.
+  const showWarning = urgency === 'today' || (urgency === 'overdue' && deadline.status === 'open');
+
+  if (editing) {
+    return (
+      <div className={styles.row} data-urgency={urgency}>
+        <div className={styles.editForm}>
+          <div className={styles.editFieldRow}>
+            <input
+              className={styles.input}
+              value={form.title}
+              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              placeholder="Title"
+              disabled={saving}
+            />
+            <input
+              className={styles.input}
+              type="datetime-local"
+              value={form.due_at}
+              onChange={(e) => setForm((f) => ({ ...f, due_at: e.target.value }))}
+              disabled={saving}
+            />
+          </div>
+          <div className={styles.editFieldRow}>
+            <select
+              className={styles.input}
+              value={form.category}
+              onChange={(e) => setForm((f) => ({ ...f, category: e.target.value as DeadlineCategory }))}
+              disabled={saving}
+            >
+              {CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.input}
+              value={form.leverage_class}
+              onChange={(e) => setForm((f) => ({ ...f, leverage_class: e.target.value as LeverageClass }))}
+              disabled={saving}
+            >
+              {LEVERAGE_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+          </div>
+          <input
+            className={styles.input}
+            value={form.notes}
+            onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            placeholder="Notes (optional)"
+            disabled={saving}
+          />
+          {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+          <div className={styles.editActions}>
+            <button
+              type="button"
+              className={styles.primaryButton}
+              onClick={save}
+              disabled={saving || !form.title.trim() || !form.due_at}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" className={styles.secondaryButton} onClick={cancel} disabled={saving}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.row} data-urgency={urgency}>
+      <span className={styles.urgencyDot} data-urgency={urgency} aria-hidden="true" />
+      <div className={styles.rowMeta}>
+        <span className={`${styles.rowTitle} type-body`}>{deadline.title}</span>
+        <span className={`${styles.rowDetail} type-caption`}>
+          {deadline.category} · {deadline.leverage_class} leverage
+        </span>
+        {showWarning && (
+          <span className={`${styles.warning} type-caption`}>
+            {urgency === 'overdue' ? "Past due — will be marked missed shortly." : 'Due today.'}
+          </span>
+        )}
+        {error && <span className={`${styles.error} type-caption`}>{error}</span>}
+      </div>
+      <span className={`${styles.rowDue} type-caption`}>{formatDate(deadline.due_at)}</span>
+      {confirmingDelete ? (
+        <div className={styles.confirmDelete}>
+          <span className="type-caption">Delete this deadline?</span>
+          <button type="button" className={styles.removeButton} onClick={handleDelete} disabled={deleting}>
+            {deleting ? 'Deleting…' : 'Confirm'}
+          </button>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => setConfirmingDelete(false)}
+            disabled={deleting}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className={styles.rowActions}>
+          {allowEdit && (
+            <button type="button" className={styles.editButton} onClick={startEdit}>
+              Edit
+            </button>
+          )}
+          <button type="button" className={styles.removeButton} onClick={() => setConfirmingDelete(true)}>
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Deadlines — a dedicated timeline screen (navigation redesign), moved
  * out of `Semester`'s "This semester's deadlines" card. Reuses the
  * existing deadline backend exactly as `Semester` did: `state.deadlines`
- * from `useBootstrap()` (populated by `get_bootstrap_state`), with no
- * new IPC command. `Semester` keeps deadline *creation* (Pull deadlines
- * connector); this screen is purely the read/browse timeline, grouped
- * by week with overdue/today called out first and urgency colour-coded
- * via `data-urgency` (see `Deadlines.module.css`, which reuses the same
- * `--severity-*` tokens the rest of the app already uses for urgency).
+ * from `useBootstrap()` (populated by `get_bootstrap_state`, which also
+ * runs Feature 2's open->missed sweep on every read). `Semester` keeps
+ * deadline *creation* (Pull deadlines connector); this screen owns
+ * browsing (grouped by week, urgency colour-coded), editing (Feature 1),
+ * and — via the Open/Missed tabs below — Feature 2's missed-deadline
+ * archive, distinct from the open timeline.
  */
 export default function Deadlines() {
-  const { state, loading } = useBootstrap();
+  const { state, loading, refresh } = useBootstrap();
+  const [tab, setTab] = useState<DeadlinesTab>('open');
 
   if (loading && !state) {
     return (
@@ -117,6 +348,10 @@ export default function Deadlines() {
   }
 
   const deadlines = state?.deadlines ?? [];
+  const missed = deadlines
+    .filter((d) => d.status === 'missed')
+    .slice()
+    .sort((a, b) => b.due_at.localeCompare(a.due_at));
   const today = startOfDay(new Date());
   const groups = groupDeadlines(deadlines, today);
 
@@ -127,40 +362,72 @@ export default function Deadlines() {
         <DensityToggle />
       </div>
 
-      {groups.length === 0 ? (
-        <EmptyState
-          icon={CalendarClock}
-          title="No upcoming deadlines"
-          description="Pull deadlines from a connector in Semester, or check back once courses post assignments."
-        />
-      ) : (
-        <div className={styles.timeline}>
-          {groups.map((group) => (
-            <section key={group.key} className={styles.group}>
-              <h2 className={`${styles.groupLabel} type-caption`} data-urgency={group.urgency}>
-                {group.label}
-                <span className={styles.groupCount}>{group.items.length}</span>
-              </h2>
-              <Card className={styles.card}>
-                <div className={styles.list}>
-                  {group.items.map((d) => (
-                    <div key={d.id} className={styles.row} data-urgency={group.urgency}>
-                      <span className={styles.urgencyDot} data-urgency={group.urgency} aria-hidden="true" />
-                      <div className={styles.rowMeta}>
-                        <span className={`${styles.rowTitle} type-body`}>{d.title}</span>
-                        <span className={`${styles.rowDetail} type-caption`}>
-                          {d.category} · {d.leverage_class} leverage
-                        </span>
-                      </div>
-                      <span className={`${styles.rowDue} type-caption`}>{formatDate(d.due_at)}</span>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            </section>
-          ))}
-        </div>
-      )}
+      <div className={styles.tabs} role="tablist" aria-label="Deadline sections">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'open'}
+          className={styles.tab}
+          data-active={tab === 'open'}
+          onClick={() => setTab('open')}
+        >
+          Open
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'missed'}
+          className={styles.tab}
+          data-active={tab === 'missed'}
+          onClick={() => setTab('missed')}
+        >
+          Missed{missed.length > 0 ? ` (${missed.length})` : ''}
+        </button>
+      </div>
+
+      {tab === 'open' &&
+        (groups.length === 0 ? (
+          <EmptyState
+            icon={CalendarClock}
+            title="No upcoming deadlines"
+            description="Pull deadlines from a connector in Semester, or check back once courses post assignments."
+          />
+        ) : (
+          <div className={styles.timeline}>
+            {groups.map((group) => (
+              <section key={group.key} className={styles.group}>
+                <h2 className={`${styles.groupLabel} type-caption`} data-urgency={group.urgency}>
+                  {group.label}
+                  <span className={styles.groupCount}>{group.items.length}</span>
+                </h2>
+                <Card className={styles.card}>
+                  <div className={styles.list}>
+                    {group.items.map((d) => (
+                      <DeadlineRowItem key={d.id} deadline={d} urgency={group.urgency} onSaved={refresh} />
+                    ))}
+                  </div>
+                </Card>
+              </section>
+            ))}
+          </div>
+        ))}
+
+      {tab === 'missed' &&
+        (missed.length === 0 ? (
+          <EmptyState
+            icon={CalendarClock}
+            title="Nothing missed"
+            description="Deadlines that pass their due date while still open land here automatically."
+          />
+        ) : (
+          <Card className={styles.card}>
+            <div className={styles.list}>
+              {missed.map((d) => (
+                <DeadlineRowItem key={d.id} deadline={d} urgency="overdue" onSaved={refresh} allowEdit={false} />
+              ))}
+            </div>
+          </Card>
+        ))}
     </div>
   );
 }
