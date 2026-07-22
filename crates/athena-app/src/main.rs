@@ -131,6 +131,7 @@ fn main() {
             commands::ai::save_ask_athena_message,
             commands::ai::list_ask_athena_conversations,
             commands::ai::get_ask_athena_conversation,
+            commands::ai::delete_ask_athena_conversation,
             commands::ai::generate_daily_routine_questions,
             commands::ai::extract_daily_routine_answers,
         ])
@@ -142,6 +143,11 @@ fn main() {
             // hand it back to outside of app-managed state.
             let guard = init_logging(&paths.log_dir)?;
             app.manage(guard);
+
+            // Guards `start_notion_oauth` against concurrent invocations
+            // trying to bind the same fixed loopback port — see
+            // `commands::integrations::NotionOauthInFlight`'s doc comment.
+            app.manage(commands::integrations::NotionOauthInFlight::default());
 
             info!(event = "startup", "athena-app starting up");
 

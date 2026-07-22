@@ -887,3 +887,7 @@ export async function listAskAthenaConversations(): Promise<AskAthenaConversatio
 export async function getAskAthenaConversation(conversationId: string): Promise<AskAthenaMessageDto[]> {
   return invoke<AskAthenaMessageDto[]>("get_ask_athena_conversation", { conversationId });
 }
+
+export async function deleteAskAthenaConversation(conversationId: string): Promise<void> {
+  return invoke<void>("delete_ask_athena_conversation", { conversationId });
+}

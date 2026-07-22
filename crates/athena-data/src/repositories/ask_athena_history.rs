@@ -157,6 +157,20 @@ pub fn list_conversations(conn: &Connection, limit: i64) -> Result<Vec<Conversat
     Ok(rows)
 }
 
+/// Deletes every row belonging to one conversation — the "Delete chat"
+/// action `AskAthena.tsx` exposes per entry in the "Recent chats" list.
+/// Idempotent, same "nothing to remove is still success" precedent as
+/// every other delete in this codebase (`keychain::delete_secret`,
+/// `disconnect_oauth_source`): deleting an already-gone/never-existed
+/// conversation id is not an error.
+pub fn delete_conversation(conn: &Connection, conversation_id: &str) -> Result<(), DataError> {
+    conn.execute(
+        "DELETE FROM ask_athena_messages WHERE conversation_id = ?1",
+        params![conversation_id],
+    )?;
+    Ok(())
+}
+
 /// Every message in one conversation, oldest first — the order a chat
 /// thread is rendered in. No `limit`: a single conversation's length is
 /// already implicitly bounded by normal chat use, unlike the flat
@@ -272,5 +286,26 @@ mod tests {
         assert_eq!(ids.len(), 5);
         assert!(ids.contains(&"c0".to_string()), "c0 was touched most recently, should survive");
         assert!(!ids.contains(&"c1".to_string()), "c1 is now the least recently active, should be pruned");
+    }
+
+    #[test]
+    fn deleting_a_conversation_removes_only_its_own_messages() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = open_and_migrate(tmp.path()).unwrap();
+
+        insert_message(&conn, &new_msg("c1", "user", "keep me")).unwrap();
+        insert_message(&conn, &new_msg("c2", "user", "delete me")).unwrap();
+
+        delete_conversation(&conn, "c2").unwrap();
+
+        assert!(list_messages_for_conversation(&conn, "c2").unwrap().is_empty());
+        assert_eq!(list_messages_for_conversation(&conn, "c1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_nonexistent_conversation_is_not_an_error() {
+        let tmp = NamedTempFile::new().unwrap();
+        let conn = open_and_migrate(tmp.path()).unwrap();
+        assert!(delete_conversation(&conn, "never-existed").is_ok());
     }
 }

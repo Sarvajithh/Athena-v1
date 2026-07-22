@@ -47,7 +47,10 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 const DEFAULT_HF_MODEL: &str = "Qwen/Qwen2.5-7B-Instruct";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const DEFAULT_OLLAMA_MODEL: &str = "llama3";
+// Pinned to whatever model the user has actually pulled via `ollama pull`
+// — Ollama has no built-in model, so this must match the tag exactly
+// (`ollama list` on the user's machine), or every call 404s.
+const DEFAULT_OLLAMA_MODEL: &str = "qwen2.5:7b";
 
 // Duplicated in `commands::integrations` as `now_iso8601`/`chrono_like_iso_date`/
 // `civil_from_days` — same reasoning that file's own doc comment gives
@@ -492,6 +495,21 @@ pub fn get_ask_athena_conversation(
     let rows = ask_athena_history::list_messages_for_conversation(&conn, &conversation_id)
         .map_err(|e| e.to_string())?;
     Ok(rows.into_iter().map(ask_athena_message_to_dto).collect())
+}
+
+/// Deletes one conversation and every message in it — the "Delete
+/// chat" action on each entry in `AskAthena.tsx`'s "Recent chats" list.
+/// Idempotent, same "nothing to remove is success" precedent every
+/// other delete command in this codebase follows.
+#[tauri::command]
+pub fn delete_ask_athena_conversation(
+    db: State<'_, Mutex<Connection>>,
+    conversation_id: String,
+) -> Result<(), String> {
+    use athena_data::repositories::ask_athena_history;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    ask_athena_history::delete_conversation(&conn, &conversation_id).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------

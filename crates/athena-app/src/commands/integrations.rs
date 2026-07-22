@@ -11,6 +11,7 @@
 //! opening (07_INTEGRATIONS.md's "never block startup waiting for
 //! integrations").
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use athena_data::repositories::integrations as integrations_repo;
@@ -951,8 +952,61 @@ pub fn list_classroom_announcements(
 /// integration's OAuth settings at <https://www.notion.so/my-integrations>.
 const NOTION_OAUTH_PORT: u16 = 47123;
 
+/// In-flight guard for `start_notion_oauth`: unlike Gmail/Google
+/// Classroom (ephemeral OS-assigned ports, so concurrent attempts never
+/// collide), Notion is pinned to one fixed port
+/// (`NOTION_OAUTH_PORT`/`bind_fixed`), and the listener holds that port
+/// for up to `OAUTH_CALLBACK_TIMEOUT` (180s) while waiting on the
+/// browser. A second `start_notion_oauth` call inside that window would
+/// otherwise hit `bind_fixed`'s raw "could not bind loopback port
+/// 47123: ... (os error 10048)" — this flag turns that into a clear,
+/// actionable error instead, and is managed as Tauri app state (see
+/// `main.rs`'s `setup`), one instance for the whole process, not
+/// per-call.
+pub struct NotionOauthInFlight(pub AtomicBool);
+
+impl Default for NotionOauthInFlight {
+    fn default() -> Self {
+        NotionOauthInFlight(AtomicBool::new(false))
+    }
+}
+
+/// RAII guard that clears the in-flight flag on every exit path from
+/// `start_notion_oauth` (success, `?`-propagated error, or state
+/// mismatch) — a plain `Ok`/early-return `Err` wouldn't reliably reset
+/// it otherwise, and a stuck `true` would lock out Notion connects for
+/// the rest of the process's life, not just 180 seconds.
+struct InFlightReset<'a>(&'a AtomicBool);
+
+impl Drop for InFlightReset<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 #[tauri::command]
-pub async fn start_notion_oauth(db: State<'_, Mutex<Connection>>) -> Result<DataSourceDto, String> {
+pub async fn start_notion_oauth(
+    db: State<'_, Mutex<Connection>>,
+    in_flight: State<'_, NotionOauthInFlight>,
+) -> Result<DataSourceDto, String> {
+    // Claim the in-flight slot before touching the port at all. If
+    // another `start_notion_oauth` call is already mid-flow (e.g. a
+    // double-click on "Connect Notion", or a click before the first
+    // flow's browser tab visibly did anything), fail fast here with a
+    // clear message rather than reaching `bind_fixed` and surfacing the
+    // raw OS bind-failure error.
+    if in_flight
+        .0
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(
+            "A Notion connection is already in progress — finish it in your browser, or wait up to 3 minutes for it to time out"
+                .to_string(),
+        );
+    }
+    let _reset_in_flight = InFlightReset(&in_flight.0);
+
     let client_id = notion_client_id()?;
     let client_secret = notion_client_secret()?;
 
