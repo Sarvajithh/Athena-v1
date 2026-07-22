@@ -89,19 +89,50 @@ impl Synthesizer {
             Ok(raw) => match Self::grounded_recommendation(payload, &raw, provider.name()) {
                 Some(rec) => return Some(rec),
                 None => {
+                    tracing::debug!(
+                        event = "synthesizer_grounding_failed",
+                        provider = provider.name(),
+                        "response failed grounding, retrying once with a stricter prompt"
+                    );
                     // Grounding failed on the raw response — retry once,
                     // stricter, per §3. A transport failure on the retry
                     // still falls through to the next provider/template.
                     let retry_request = request.stricter_retry();
-                    if let Ok(retry_raw) = provider.complete(&retry_request) {
-                        if let Some(rec) = Self::grounded_recommendation(payload, &retry_raw, provider.name()) {
-                            return Some(rec);
+                    match provider.complete(&retry_request) {
+                        Ok(retry_raw) => match Self::grounded_recommendation(payload, &retry_raw, provider.name()) {
+                            Some(rec) => return Some(rec),
+                            None => {
+                                tracing::warn!(
+                                    event = "synthesizer_grounding_failed_after_retry",
+                                    provider = provider.name(),
+                                    "stricter retry still failed grounding, moving to next provider"
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                event = "synthesizer_provider_unavailable",
+                                provider = provider.name(),
+                                error = %e,
+                                "stricter retry transport failure, moving to next provider"
+                            );
                         }
                     }
                 }
             },
-            Err(_) => {
-                // Provider unreachable (§10.1) — no retry, move on.
+            Err(e) => {
+                // Provider unreachable (§10.1) — no retry, move on. This
+                // is the one place a Gemini/HF/Ollama HTTP error, timeout,
+                // or auth rejection actually surfaces anywhere: previously
+                // it was discarded here with no log line at all, which
+                // made "every provider silently falls to template" all
+                // but undiagnosable from outside this function.
+                tracing::warn!(
+                    event = "synthesizer_provider_unavailable",
+                    provider = provider.name(),
+                    error = %e,
+                    "provider unreachable, moving to next provider"
+                );
             }
         }
         None

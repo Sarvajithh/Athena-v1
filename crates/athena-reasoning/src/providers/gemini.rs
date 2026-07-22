@@ -145,9 +145,16 @@ impl LlmProvider for GeminiProvider {
             .map_err(|e| ReasoningError::ProviderUnavailable(e.to_string()))?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            // Google's error body (JSON) usually names the specific quota
+            // metric that tripped a 429 (e.g. which of RPM/TPM/RPD, or a
+            // free-tier-disabled condition) — genuinely different
+            // information than the status code alone, and previously
+            // discarded here entirely, which is why a 429 in the log gave
+            // no way to tell which limit was actually hit.
+            let body = response.text().unwrap_or_default();
             return Err(ReasoningError::ProviderUnavailable(format!(
-                "Gemini API returned {}",
-                response.status()
+                "Gemini API returned {status}: {body}"
             )));
         }
 

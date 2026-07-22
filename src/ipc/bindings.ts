@@ -828,18 +828,29 @@ export async function extractDailyRoutineAnswers(transcript: string): Promise<Da
 }
 
 // ---------------------------------------------------------------------
-// Ask Athena chat history persistence (V9 migration). Mirrors
-// `commands::ai::AskAthenaMessageDto` / `save_ask_athena_message` /
-// `list_ask_athena_history` field-for-field. Additive alongside
+// Ask Athena chat history persistence (V9 migration, extended by V10
+// with conversation grouping). Mirrors `commands::ai::AskAthenaMessageDto`
+// / `AskAthenaConversationDto` / `save_ask_athena_message` /
+// `list_ask_athena_conversations` / `get_ask_athena_conversation`
+// field-for-field. ChatGPT/Gemini-style separate conversations rather
+// than one flat scrollback, capped server-side at the 5 most recently
+// active (`ask_athena_history::MAX_RETAINED_CONVERSATIONS` — kept in
+// sync here as `MAX_RETAINED_CONVERSATIONS` purely for the frontend's
+// own display logic, never enforced client-side). Additive alongside
 // `askAthena` above and the screen's existing local `messages` state —
 // `AskAthena.tsx` calls `saveAskAthenaMessage` right alongside each
 // `setMessages` call (once for the user's turn, once for Athena's
-// reply) and calls `listAskAthenaHistory` once on mount to repopulate
-// the scrollback across sessions.
+// reply), `listAskAthenaConversations` once on mount to render the
+// recent-chats list, and `getAskAthenaConversation` whenever the active
+// conversation changes (on mount, for the most recent one; on switch).
 // ---------------------------------------------------------------------
+
+/** Must match `ask_athena_history::MAX_RETAINED_CONVERSATIONS` in `crates/athena-data/src/repositories/ask_athena_history.rs`. */
+export const MAX_RETAINED_ASK_ATHENA_CONVERSATIONS = 5;
 
 export interface AskAthenaMessageDto {
   id: number;
+  conversation_id: string;
   role: "user" | "athena";
   text: string;
   source: string | null;
@@ -847,19 +858,32 @@ export interface AskAthenaMessageDto {
   created_at: string;
 }
 
+export interface AskAthenaConversationDto {
+  conversation_id: string;
+  title: string;
+  last_message_at: string;
+  message_count: number;
+}
+
 export interface SaveAskAthenaMessageInput {
+  conversation_id: string;
   role: "user" | "athena";
   text: string;
   source?: string | null;
   confidence?: string | null;
 }
 
-/** Persists one chat bubble (user turn or Athena reply). */
+/** Persists one chat bubble (user turn or Athena reply) into its conversation. Also prunes down to the 5 most recently active conversations server-side. */
 export async function saveAskAthenaMessage(input: SaveAskAthenaMessageInput): Promise<AskAthenaMessageDto> {
   return invoke<AskAthenaMessageDto>("save_ask_athena_message", { input });
 }
 
-/** Most recent `limit` chat messages, oldest first — used to repopulate the scrollback on mount. */
-export async function listAskAthenaHistory(limit = 50): Promise<AskAthenaMessageDto[]> {
-  return invoke<AskAthenaMessageDto[]>("list_ask_athena_history", { limit });
+/** The most recently active conversations, most recent first — already capped at 5 by the backend. */
+export async function listAskAthenaConversations(): Promise<AskAthenaConversationDto[]> {
+  return invoke<AskAthenaConversationDto[]>("list_ask_athena_conversations");
+}
+
+/** Every message in one conversation, oldest first. */
+export async function getAskAthenaConversation(conversationId: string): Promise<AskAthenaMessageDto[]> {
+  return invoke<AskAthenaMessageDto[]>("get_ask_athena_conversation", { conversationId });
 }

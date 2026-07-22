@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod day_rollover_scheduler;
 mod keychain;
 mod oauth_loopback;
 mod routine_scheduler;
@@ -128,7 +129,8 @@ fn main() {
             commands::ai::has_gemini_api_key,
             commands::ai::ask_athena_command,
             commands::ai::save_ask_athena_message,
-            commands::ai::list_ask_athena_history,
+            commands::ai::list_ask_athena_conversations,
+            commands::ai::get_ask_athena_conversation,
             commands::ai::generate_daily_routine_questions,
             commands::ai::extract_daily_routine_answers,
         ])
@@ -171,6 +173,12 @@ fn main() {
             // immediately — the window opens whether or not today's
             // questionnaire time has been reached yet.
             routine_scheduler::spawn(app.handle().clone());
+
+            // Same "never block startup" contract as the two lines
+            // above: schedules the disruption-reset trigger
+            // (`day_rollover_scheduler`'s own module doc comment) and
+            // returns immediately.
+            day_rollover_scheduler::spawn(app.handle().clone());
 
             Ok(())
         });

@@ -75,6 +75,25 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------
+// Keyring service/username identifiers. `SERVICE` is the single
+// keyring "service" namespace every credential in this module is
+// stored under (`keyring::Entry::new(SERVICE, username)`) — matching
+// this app's own bundle identifier (`tauri.conf.json`'s `identifier`)
+// so entries are unambiguous alongside any other app on the same OS
+// keychain. Each `_USERNAME` constant is the per-credential key within
+// that service; `oauth_username` builds the equivalent per-provider
+// key for the three OAuth connectors from `OAUTH_USERNAME_PREFIX`.
+// ---------------------------------------------------------------------
+
+const SERVICE: &str = "com.athena.app";
+
+const GITHUB_TOKEN_USERNAME: &str = "github_token";
+const ANTHROPIC_API_KEY_USERNAME: &str = "anthropic_api_key";
+const HF_API_TOKEN_USERNAME: &str = "hf_api_token";
+const GEMINI_API_KEY_USERNAME: &str = "gemini_api_key";
+const OAUTH_USERNAME_PREFIX: &str = "oauth_";
+
+// ---------------------------------------------------------------------
 // OAuth app credentials (Google + Notion). These identify the app
 // itself to each provider — not a per-user token — so they're static
 // per install, not something the user pastes in via Settings like the

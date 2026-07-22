@@ -957,7 +957,14 @@ pub async fn start_notion_oauth(db: State<'_, Mutex<Connection>>) -> Result<Data
     let client_secret = notion_client_secret()?;
 
     let listener = LoopbackListener::bind_fixed(NOTION_OAUTH_PORT).await?;
-    let redirect_uri = format!("http://localhost:{}/callback", listener.port);
+    // Must exactly match what's registered in the Notion integration's
+    // OAuth settings (this module's own doc comment above:
+    // `http://127.0.0.1:47123/callback`) — Notion does exact-string
+    // redirect_uri validation, unlike Gmail/Google Classroom's wildcard
+    // loopback allowance, so `localhost` here (even though it resolves
+    // to the same address `LoopbackListener::bind_fixed` is actually
+    // listening on) gets rejected as a mismatch.
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", listener.port);
     let state = oauth2::generate_state();
 
     // Notion has no PKCE support and no `scope` param — capabilities are

@@ -7,9 +7,13 @@
 //! `Bearer hf_…` token.
 //!
 //! **Free-tier model choices** (good JSON instruction-following, no
-//! billing required as of 2026):
-//!   - `"Qwen/Qwen2.5-72B-Instruct"`      — best reasoning on free tier
-//!   - `"meta-llama/Llama-3.3-70B-Instruct"` — strong, widely tested
+//! billing required as of 2026 — HF's free Serverless Inference tier
+//! generally only covers models under ~10B parameters; a 72B model like
+//! `Qwen2.5-72B-Instruct` returns 403 on a free token even with correct
+//! token permissions, confirmed against a real account's usage
+//! dashboard, not just documentation):
+//!   - `"Qwen/Qwen2.5-7B-Instruct"`         — good reasoning, free-tier eligible (default)
+//!   - `"meta-llama/Llama-3.3-70B-Instruct"` — strong, but check free-tier access before switching to it
 //!   - `"mistralai/Mistral-7B-Instruct-v0.3"` — fast, lighter
 //!   - `"HuggingFaceH4/zephyr-7b-beta"`   — good at JSON-only output
 //!
@@ -41,8 +45,8 @@ pub struct HuggingFaceProvider {
 
 impl HuggingFaceProvider {
     /// `model` is a fully-qualified HF model ID, e.g.
-    /// `"Qwen/Qwen2.5-72B-Instruct"`. The default wired in
-    /// `commands/ai.rs` is `Qwen/Qwen2.5-72B-Instruct` — best
+    /// `"Qwen/Qwen2.5-7B-Instruct"`. The default wired in
+    /// `commands/ai.rs` is `Qwen/Qwen2.5-7B-Instruct` — free-tier
     /// JSON-instruction following on the free tier. Change it by
     /// saving a different model string to the keychain (or just swap
     /// the constant in `ai.rs`) — no code change needed here.
@@ -122,9 +126,13 @@ impl LlmProvider for HuggingFaceProvider {
         if !response.status().is_success() {
             let status = response.status();
             // 429 = free-tier rate limit hit; 503 = model loading (cold
-            // start). Both are transient — fall through to next provider.
+            // start); 403 = token permission or model-access issue — HF's
+            // JSON error body names which one (e.g. "This authentication
+            // method does not have sufficient permissions..."), previously
+            // discarded here entirely.
+            let body = response.text().unwrap_or_default();
             return Err(ReasoningError::ProviderUnavailable(format!(
-                "HF Inference API returned {status}"
+                "HF Inference API returned {status}: {body}"
             )));
         }
 

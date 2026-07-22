@@ -20,6 +20,12 @@ athena-data = { path = "../athena-data" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Used only by `pipeline.rs`'s `Synthesizer::try_provider` to surface
+# provider-failure reasons (transport error, grounding rejection) that
+# were previously discarded silently — see that function's own doc
+# comment. Same version pin as `athena-app`'s own `tracing` dependency.
+tracing = "0.1"
+
 # Blocking client, not async: `athena-reasoning` takes no `tokio`
 # dependency of its own (Stage 4 calls are infrequent, one-shot request/
 # response, never a stream the caller needs to hold open), so the one

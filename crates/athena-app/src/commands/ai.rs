@@ -44,7 +44,7 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
 // Best free-tier model for JSON instruction-following as of 2026-07.
 // Swap to "meta-llama/Llama-3.3-70B-Instruct" or
 // "mistralai/Mistral-7B-Instruct-v0.3" for a faster/lighter option.
-const DEFAULT_HF_MODEL: &str = "Qwen/Qwen2.5-72B-Instruct";
+const DEFAULT_HF_MODEL: &str = "Qwen/Qwen2.5-7B-Instruct";
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3";
@@ -342,14 +342,18 @@ pub async fn ask_athena_command(message: String) -> Result<Recommendation, Strin
 }
 
 // ---------------------------------------------------------------------
-// Ask Athena chat history (V9 migration, additive) — persists the
-// screen's scrollback across sessions. Mirrors `commands::routine`'s
-// submit/fetch shape (typed input struct in, typed DTO out,
-// `Mutex<Connection>` state) rather than `ask_athena_command` above:
-// this is a plain repository read/write, not a Synthesizer call, so it
-// stays synchronous and needs no `spawn_blocking` — same reasoning
-// `commands::routine::submit_daily_routine_response` already applies
-// to its own DB-only commands.
+// Ask Athena chat history (V9 migration, extended by V10 with
+// `conversation_id`) — persists the screen's chat as separate
+// conversations, ChatGPT/Gemini-style, capped at the 5 most recently
+// active (`ask_athena_history::MAX_RETAINED_CONVERSATIONS`) rather than
+// one unbounded scrollback, so this never grows storage without limit.
+// Mirrors `commands::routine`'s submit/fetch shape (typed input struct
+// in, typed DTO out, `Mutex<Connection>` state) rather than
+// `ask_athena_command` above: this is a plain repository read/write,
+// not a Synthesizer call, so it stays synchronous and needs no
+// `spawn_blocking` — same reasoning
+// `commands::routine::submit_daily_routine_response` already applies to
+// its own DB-only commands.
 // ---------------------------------------------------------------------
 
 /// One persisted chat bubble. Mirrors
@@ -360,6 +364,7 @@ pub async fn ask_athena_command(message: String) -> Result<Recommendation, Strin
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AskAthenaMessageDto {
     pub id: i64,
+    pub conversation_id: String,
     pub role: String,
     pub text: String,
     pub source: Option<String>,
@@ -367,11 +372,22 @@ pub struct AskAthenaMessageDto {
     pub created_at: String,
 }
 
+/// One entry in the "recent chats" list. Mirrors
+/// `ask_athena_history::ConversationSummaryRow` field-for-field.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AskAthenaConversationDto {
+    pub conversation_id: String,
+    pub title: String,
+    pub last_message_at: String,
+    pub message_count: i64,
+}
+
 fn ask_athena_message_to_dto(
     row: athena_data::repositories::ask_athena_history::AskAthenaMessageRow,
 ) -> AskAthenaMessageDto {
     AskAthenaMessageDto {
         id: row.id,
+        conversation_id: row.conversation_id,
         role: row.role,
         text: row.text,
         source: row.source,
@@ -380,12 +396,28 @@ fn ask_athena_message_to_dto(
     }
 }
 
+fn ask_athena_conversation_to_dto(
+    row: athena_data::repositories::ask_athena_history::ConversationSummaryRow,
+) -> AskAthenaConversationDto {
+    AskAthenaConversationDto {
+        conversation_id: row.conversation_id,
+        title: row.title,
+        last_message_at: row.last_message_at,
+        message_count: row.message_count,
+    }
+}
+
 /// Typed input for `save_ask_athena_message` — `role` is validated at
 /// the schema level (V9's `CHECK (role IN ('user', 'athena'))`), so an
 /// invalid value here surfaces as a normal `Result::Err` from the
 /// insert rather than needing a second check in this file.
+/// `conversation_id` is client-generated (`crypto.randomUUID()` in
+/// `AskAthena.tsx`, one per "New chat") — this command never invents
+/// one, so the frontend's optimistic local state and the persisted row
+/// always agree on which conversation a turn belongs to.
 #[derive(Debug, serde::Deserialize)]
 pub struct SaveAskAthenaMessageInput {
+    pub conversation_id: String,
     pub role: String,
     pub text: String,
     pub source: Option<String>,
@@ -397,6 +429,10 @@ pub struct SaveAskAthenaMessageInput {
 /// existing optimistic local `setMessages` flow, never a replacement
 /// for it: the frontend still renders from local state immediately and
 /// this call just makes the same turn durable across a refresh/restart.
+/// Also prunes down to the 5 most recently active conversations as a
+/// side effect of the insert (`ask_athena_history::insert_message`'s
+/// own doc comment) — a conversation that falls out of that window is
+/// deleted here, not just hidden from the list.
 #[tauri::command]
 pub fn save_ask_athena_message(
     db: State<'_, Mutex<Connection>>,
@@ -408,6 +444,7 @@ pub fn save_ask_athena_message(
     let id = ask_athena_history::insert_message(
         &conn,
         &ask_athena_history::NewAskAthenaMessage {
+            conversation_id: input.conversation_id.clone(),
             role: input.role,
             text: input.text,
             source: input.source,
@@ -416,25 +453,44 @@ pub fn save_ask_athena_message(
     )
     .map_err(|e| e.to_string())?;
 
-    let recent = ask_athena_history::list_recent_messages(&conn, 1).map_err(|e| e.to_string())?;
-    recent
+    let messages = ask_athena_history::list_messages_for_conversation(&conn, &input.conversation_id)
+        .map_err(|e| e.to_string())?;
+    messages
         .into_iter()
         .find(|r| r.id == id)
         .map(ask_athena_message_to_dto)
         .ok_or_else(|| "Ask Athena message vanished immediately after insert.".to_string())
 }
 
-/// Most recent `limit` chat messages, oldest first — what
-/// `AskAthena.tsx` loads on mount to repopulate its scrollback.
+/// The most recently active conversations, most recent first — capped
+/// at `ask_athena_history::MAX_RETAINED_CONVERSATIONS` (5) by the
+/// repository itself, so `AskAthena.tsx` never has to think about the
+/// limit when rendering this list.
 #[tauri::command]
-pub fn list_ask_athena_history(
+pub fn list_ask_athena_conversations(
     db: State<'_, Mutex<Connection>>,
-    limit: i64,
+) -> Result<Vec<AskAthenaConversationDto>, String> {
+    use athena_data::repositories::ask_athena_history;
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = ask_athena_history::list_conversations(&conn, ask_athena_history::MAX_RETAINED_CONVERSATIONS)
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(ask_athena_conversation_to_dto).collect())
+}
+
+/// Every message in one conversation, oldest first — what
+/// `AskAthena.tsx` loads when the user opens a conversation from the
+/// recent-chats list (and on mount, for the most recently active one).
+#[tauri::command]
+pub fn get_ask_athena_conversation(
+    db: State<'_, Mutex<Connection>>,
+    conversation_id: String,
 ) -> Result<Vec<AskAthenaMessageDto>, String> {
     use athena_data::repositories::ask_athena_history;
 
     let conn = db.lock().map_err(|e| e.to_string())?;
-    let rows = ask_athena_history::list_recent_messages(&conn, limit).map_err(|e| e.to_string())?;
+    let rows = ask_athena_history::list_messages_for_conversation(&conn, &conversation_id)
+        .map_err(|e| e.to_string())?;
     Ok(rows.into_iter().map(ask_athena_message_to_dto).collect())
 }
 
