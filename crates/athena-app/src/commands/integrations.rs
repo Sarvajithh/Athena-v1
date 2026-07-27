@@ -1562,8 +1562,8 @@ pub(crate) fn find_date_in_text_relative(text: &str, today: (i64, u32, u32)) -> 
             }
             let today_weekday = ((today_days % 7 + 7) % 7 + 4) % 7; // epoch day 0 (1970-01-01) was a Thursday.
             let mut diff = (idx as i64 - today_weekday + 7) % 7;
-            if lower.contains(&format!("next {name}")) && diff == 0 {
-                diff = 7;
+            if lower.contains(&format!("next {name}")) {
+                diff = if diff == 0 { 7 } else { diff + 7 };
             }
             Some(diff)
         })

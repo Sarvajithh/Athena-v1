@@ -127,6 +127,7 @@ impl Synthesizer {
                     tracing::debug!(
                         event = "synthesizer_grounding_failed",
                         provider = provider.name(),
+                        raw_snippet = %raw.chars().take(300).collect::<String>(),
                         "response failed grounding, retrying once with a stricter prompt"
                     );
                     // Grounding failed on the raw response — retry once,
@@ -140,6 +141,7 @@ impl Synthesizer {
                                 tracing::warn!(
                                     event = "synthesizer_grounding_failed_after_retry",
                                     provider = provider.name(),
+                                    raw_snippet = %retry_raw.chars().take(300).collect::<String>(),
                                     "stricter retry still failed grounding, moving to next provider"
                                 );
                             }
@@ -183,15 +185,80 @@ impl Synthesizer {
     /// subset of known evidence IDs — is what's enforced here; that is
     /// exactly the seam constrained output (§7.4) is designed to make
     /// tractable.
-    fn grounded_recommendation(payload: &EvidencePayload, raw: &str, provider_name: &str) -> Option<Recommendation> {
-        let parsed: SynthesisResponse = serde_json::from_str(raw).ok()?;
+    /// Best-effort recovery of a JSON object from `raw`. Cloud
+    /// providers with an enforced JSON/structured-output mode
+    /// (Gemini's `responseMimeType`, Anthropic's tool-use) rarely need
+    /// this, but a raw local-model completion (Ollama) has no such
+    /// enforcement — only the prompt's own instruction — and smaller
+    /// models in particular routinely wrap their answer in a
+    /// ` ```json ... ``` ` fence, or prefix it with a sentence of
+    /// preamble ("Here's the response:") even when told not to. A bare
+    /// `serde_json::from_str` on that raw text fails outright,
+    /// indistinguishable from the model having produced a genuinely
+    /// bad answer — this was silently failing grounding on every local
+    /// attempt regardless of answer quality. Two fallbacks, applied in
+    /// order, before giving up: strip a fenced block if present, then
+    /// fall back to the substring between the first `{` and the
+    /// matching last `}`.
+    fn extract_json_object(raw: &str) -> &str {
+        let trimmed = raw.trim();
+
+        if let Some(fenced) = trimmed
+            .strip_prefix("```json")
+            .or_else(|| trimmed.strip_prefix("```JSON"))
+            .or_else(|| trimmed.strip_prefix("```"))
+        {
+            let fenced = fenced.trim_start();
+            if let Some(end) = fenced.rfind("```") {
+                return fenced[..end].trim();
+            }
+            return fenced.trim();
+        }
+
+        if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+            if end > start {
+                return &trimmed[start..=end];
+            }
+        }
+
+        trimmed
+    }
+
+    fn grounded_recommendation(
+        payload: &EvidencePayload,
+        raw: &str,
+        provider_name: &str,
+    ) -> Option<Recommendation> {
+        let candidate = Self::extract_json_object(raw);
+        println!("candidate = {:?}", candidate);
+
+        let parsed: SynthesisResponse = match serde_json::from_str(candidate) {
+            Ok(v) => {
+                println!("parsed = {:?}", v);
+                v
+            }
+            Err(e) => {
+                println!("JSON error = {}", e);
+                return None;
+            }
+        };
+
+        println!("known ids = {:?}", payload.evidence.iter().map(|e| e.id).collect::<Vec<_>>());
+        println!("citations = {:?}", parsed.citations);
+
         if parsed.reasoning.trim().is_empty() {
+            println!("empty reasoning");
             return None;
         }
-        let known_ids: std::collections::HashSet<i64> = payload.evidence.iter().map(|e| e.id).collect();
+
+        let known_ids: std::collections::HashSet<i64> =
+            payload.evidence.iter().map(|e| e.id).collect();
+
         if parsed.citations.iter().any(|id| !known_ids.contains(id)) {
+            println!("unknown citation");
             return None;
         }
+
         Some(Recommendation::from_synthesis(
             payload,
             parsed.reasoning,
@@ -207,6 +274,50 @@ mod tests {
     use crate::context::EvidenceItem;
     use crate::error::ReasoningError;
     use crate::provider::PromptRequest;
+
+    #[test]
+    fn extract_json_object_strips_a_markdown_fence() {
+        let raw = "```json\n{\"reasoning\": \"x\", \"citations\": []}\n```";
+        assert_eq!(
+            Synthesizer::extract_json_object(raw),
+            "{\"reasoning\": \"x\", \"citations\": []}"
+        );
+    }
+
+    #[test]
+    fn extract_json_object_strips_a_bare_fence_with_no_language_tag() {
+        let raw = "```\n{\"reasoning\": \"x\", \"citations\": []}\n```";
+        assert_eq!(
+            Synthesizer::extract_json_object(raw),
+            "{\"reasoning\": \"x\", \"citations\": []}"
+        );
+    }
+
+    #[test]
+    fn extract_json_object_finds_braces_amid_preamble_prose() {
+        let raw = "Sure, here's the response:\n{\"reasoning\": \"x\", \"citations\": []}\nHope that helps!";
+        assert_eq!(
+            Synthesizer::extract_json_object(raw),
+            "{\"reasoning\": \"x\", \"citations\": []}"
+        );
+    }
+
+    #[test]
+    fn extract_json_object_passes_through_clean_json_unchanged() {
+        let raw = "{\"reasoning\": \"x\", \"citations\": []}";
+        assert_eq!(Synthesizer::extract_json_object(raw), raw);
+    }
+
+
+    #[test]
+    fn grounded_recommendation_succeeds_on_fenced_local_model_output() {
+        let raw = "```json\n{\"verdict\":\"Work on: X\",\"reasoning\":\"because Y\",\"citations\":[7]}\n```";
+        let rec = Synthesizer::grounded_recommendation(&payload(), raw, "ollama");
+        assert!(
+            rec.is_some(),
+            "fenced JSON from a local model should still ground successfully"
+        );
+    }
 
     fn payload() -> EvidencePayload {
         EvidencePayload {
