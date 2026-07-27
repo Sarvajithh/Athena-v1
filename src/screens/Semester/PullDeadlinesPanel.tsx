@@ -5,6 +5,8 @@ import {
   extractDeadlinesFromClassroom,
   extractDeadlinesFromGmail,
   extractDeadlinesFromNotion,
+  listDataSources,
+  type DataSourceDto,
   type DeadlineCandidateInput,
   type DeadlineCategory,
 } from '../../ipc/bindings';
@@ -64,10 +66,18 @@ export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<
   const [pulling, setPulling] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Only populated when a pull comes back with zero rows — distinguishes
+  // "not connected," "last sync actually failed" (and why), and "synced
+  // fine, there's genuinely nothing there" instead of showing one
+  // generic hint for all three, which previously made a real sync
+  // failure (e.g. Calendar API not enabled for the OAuth project)
+  // indistinguishable from an empty-but-healthy connector.
+  const [emptyPullSource, setEmptyPullSource] = useState<DataSourceDto | null | undefined>(undefined);
 
   const handlePull = async () => {
     setPulling(true);
     setError(null);
+    setEmptyPullSource(undefined);
     try {
       const parsed =
         connector === 'gmail'
@@ -90,6 +100,15 @@ export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<
         notes: p.notes,
       }));
       setCandidates(rows);
+
+      if (rows.length === 0) {
+        // Extraction only reads the already-synced snapshot table, so a
+        // zero-row result could mean "never connected," "last sync
+        // failed," or "synced fine, nothing due right now" — look up
+        // which one actually happened instead of guessing.
+        const sources = await listDataSources();
+        setEmptyPullSource(sources.find((s) => s.source_key === connector) ?? null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -152,8 +171,13 @@ export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<
 
       {candidates.length === 0 && !pulling ? (
         <p className="type-caption" style={{ color: 'var(--text-tertiary)' }}>
-          Nothing pulled yet. If this connector isn&apos;t connected, use Settings to connect it first — pulling
-          here just reads whatever was last synced.
+          {emptyPullSource === undefined
+            ? "Nothing pulled yet. If this connector isn't connected, use Settings to connect it first — pulling here just reads whatever was last synced."
+            : emptyPullSource === null || emptyPullSource.status === 'disconnected'
+              ? `${CONNECTOR_LABELS[connector]} isn't connected yet — connect it in Settings first, then pull again.`
+              : emptyPullSource.status === 'error'
+                ? `Last sync failed: ${emptyPullSource.last_error ?? 'unknown error'}. Fix that in Settings, then reconnect and pull again.`
+                : `Synced fine, but nothing came back from ${CONNECTOR_LABELS[connector]} to pull right now.`}
         </p>
       ) : (
         <div className={styles.list}>

@@ -51,7 +51,7 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 // Pinned to whatever model the user has actually pulled via `ollama pull`
 // — Ollama has no built-in model, so this must match the tag exactly
 // (`ollama list` on the user's machine), or every call 404s.
-const DEFAULT_OLLAMA_MODEL: &str = "qwen2.5:7b";
+const DEFAULT_OLLAMA_MODEL: &str = "gemma4:e2b";
 
 // Duplicated in `commands::integrations` as `now_iso8601`/`chrono_like_iso_date`/
 // `civil_from_days` — same reasoning that file's own doc comment gives
