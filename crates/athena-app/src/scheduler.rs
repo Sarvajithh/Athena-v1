@@ -66,6 +66,7 @@ async fn run_one_tick(app_handle: &tauri::AppHandle) {
         "github",
         "gmail",
         "google_classroom",
+        "google_calendar",
         "notion",
     ] {
         let configured_handle = {
@@ -96,6 +97,7 @@ async fn run_one_tick(app_handle: &tauri::AppHandle) {
             "github" => Some(crate::commands::integrations::run_github_sync(db).await),
             "gmail" => Some(crate::commands::integrations::run_gmail_sync(db).await),
             "google_classroom" => Some(crate::commands::integrations::run_google_classroom_sync(db).await),
+            "google_calendar" => Some(crate::commands::integrations::run_google_calendar_sync(db).await),
             "notion" => Some(crate::commands::integrations::run_notion_sync(db).await),
             _ => None,
         };

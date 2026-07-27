@@ -40,6 +40,16 @@ pub struct PromptRequest {
     /// question, appended to the *same* Stage 2/3 payload — never a new
     /// retrieval, never a new inference path.
     pub question: Option<String>,
+    /// Ask Athena rebuild, Part 2: the last ~6 turns of the *active*
+    /// conversation (verbatim), plus a short rolling summary of
+    /// anything older, rendered as one block of prose — `None` for
+    /// every non-chat capability and for a brand-new conversation with
+    /// no prior turns. This is additive context only, never a
+    /// substitute for `evidence_json`: the model still may not cite
+    /// anything outside the evidence set just because it appears in
+    /// the conversation history (Stage 5's grounding check in
+    /// `pipeline.rs` is unchanged by this field).
+    pub conversation_context: Option<String>,
     /// Set only on Stage 5's single retry after a grounding-check
     /// failure — a stricter restatement of the citation requirement,
     /// never a relaxation of it (§3: "retry once with a stricter
@@ -66,6 +76,7 @@ impl PromptRequest {
             evidence_json: self.evidence_json.clone(),
             output_schema: self.output_schema.clone(),
             question: self.question.clone(),
+            conversation_context: self.conversation_context.clone(),
             stricter: true,
         }
     }

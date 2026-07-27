@@ -106,6 +106,7 @@ mod tests {
             evidence_json: "[{\"id\":7}]".into(),
             output_schema: "{}".into(),
             question: None,
+            conversation_context: None,
             stricter: false,
         };
         let text = OllamaProvider::prompt_text(&request);

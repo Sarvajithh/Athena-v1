@@ -33,6 +33,12 @@ sha2 = "0.10"
 # network call at all, matching §1.5's "zero outbound dependency"
 # requirement. Pure Rust, no system PDF library dependency.
 pdf-extract = "0.7"
+# Google Calendar connector (§1.9-family addition) — `timeMin` on the
+# events.list call needs an RFC-3339 "now," and every existing
+# timestamp elsewhere in this codebase is already ISO-8601/RFC-3339
+# text, so this is the same "no system timezone-database dependency,
+# just formatting" usage as everywhere else, not a new capability.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -226,6 +226,41 @@ pub fn add_course_to_semester(db: State<'_, Mutex<Connection>>, input: CourseInp
     Ok(ids[0])
 }
 
+/// How many deadlines currently reference this course — the Semester
+/// screen calls this before showing its delete-confirm dialog, so the
+/// prompt can name a real number ("This will also delete 4 linked
+/// deadlines") rather than guessing or deleting blind.
+#[tauri::command]
+pub fn count_course_linked_deadlines(db: State<'_, Mutex<Connection>>, course_id: i64) -> Result<i64, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course::count_linked_deadlines(&conn, course_id).map_err(|e| e.to_string())
+}
+
+/// Deletes a course, cascading to every deadline that references it
+/// (`course::delete_cascade` — no `ON DELETE CASCADE` exists at the
+/// SQLite level in this schema, see that function's doc comment for
+/// why cascading here, in application code, is the honest choice
+/// rather than leaving orphaned `course_id` values behind). Returns the
+/// number of deadlines that were deleted along with it, so the frontend
+/// can confirm what actually happened after the fact too, not just
+/// before.
+#[derive(Debug, serde::Serialize)]
+pub struct DeleteCourseResult {
+    pub course_deleted: bool,
+    pub deadlines_deleted: i64,
+}
+
+#[tauri::command]
+pub fn delete_course(db: State<'_, Mutex<Connection>>, course_id: i64) -> Result<DeleteCourseResult, String> {
+    let mut conn = db.lock().map_err(|e| e.to_string())?;
+    let (course_deleted, deadlines_deleted) =
+        course::delete_cascade(&mut conn, course_id).map_err(|e| e.to_string())?;
+    Ok(DeleteCourseResult {
+        course_deleted,
+        deadlines_deleted,
+    })
+}
+
 /// One normalized deadline candidate, produced client-side from a
 /// connector's already-synced snapshot rows (`list_gmail_messages`,
 /// `list_classroom_coursework`, `list_classroom_announcements`,

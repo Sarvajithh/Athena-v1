@@ -362,6 +362,22 @@ export async function addCourseToSemester(input: CourseInput): Promise<number> {
   return invoke<number>("add_course_to_semester", { input });
 }
 
+/** How many deadlines currently reference this course — call before showing a delete-confirm dialog. */
+export async function countCourseLinkedDeadlines(courseId: number): Promise<number> {
+  return invoke<number>("count_course_linked_deadlines", { courseId });
+}
+
+/** Mirrors `DeleteCourseResult` (`commands::onboarding`). */
+export interface DeleteCourseResult {
+  course_deleted: boolean;
+  deadlines_deleted: number;
+}
+
+/** Deletes a course, cascading to every deadline that references it. Returns what was actually removed. */
+export async function deleteCourse(courseId: number): Promise<DeleteCourseResult> {
+  return invoke<DeleteCourseResult>("delete_course", { courseId });
+}
+
 export interface DeadlineCandidateInput {
   course_id: number | null;
   title: string;
@@ -416,6 +432,7 @@ export type SourceKey =
   | "manual"
   | "gmail"
   | "google_classroom"
+  | "google_calendar"
   | "notion";
 
 export type SyncStatus = "disconnected" | "idle" | "syncing" | "ok" | "error";
@@ -598,6 +615,30 @@ export async function listClassroomAnnouncements(): Promise<ClassroomAnnouncemen
   return invoke<ClassroomAnnouncementDto[]>("list_classroom_announcements");
 }
 
+// --- Google Calendar — reuses the shared Google OAuth client/token endpoint as Gmail/Classroom ---
+
+/** Opens the browser for Calendar consent and runs the first sync once granted. */
+export async function startGoogleCalendarOauth(): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("start_google_calendar_oauth");
+}
+
+export async function disconnectGoogleCalendar(): Promise<void> {
+  return invoke<void>("disconnect_google_calendar");
+}
+
+export interface CalendarEventDto {
+  event_id: string;
+  title: string;
+  starts_at: string | null;
+  location: string | null;
+  description: string | null;
+  fetched_at: string;
+}
+
+export async function listCalendarEvents(): Promise<CalendarEventDto[]> {
+  return invoke<CalendarEventDto[]>("list_calendar_events");
+}
+
 // --- Notion (§1.10, OAuth amendment) ---
 
 /** Opens the browser for Notion consent and runs the first sync once granted. */
@@ -666,6 +707,11 @@ export async function extractDeadlinesFromGmail(): Promise<ParsedDeadlineDto[]> 
 /** Classroom coursework already carries a `due_at` field, so this is close to a straight mapping rather than text heuristics. No network call — reads `classroom_coursework`. */
 export async function extractDeadlinesFromClassroom(): Promise<ParsedDeadlineDto[]> {
   return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_classroom");
+}
+
+/** Calendar events already carry a `starts_at` field, so this is close to a straight mapping rather than text heuristics. No network call — reads `calendar_events`. */
+export async function extractDeadlinesFromCalendar(): Promise<ParsedDeadlineDto[]> {
+  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_calendar");
 }
 
 /** Heuristically parses due dates out of already-synced Notion page titles. No network call — reads `notion_pages`. */
@@ -783,19 +829,52 @@ export async function hasGeminiApiKey(): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------
-// Ask Athena — persistent, free-form chat (new capability, additive to
-// the four above). Mirrors `commands::ai::ask_athena_command` /
-// `athena_reasoning::capabilities::ask_athena`. Requires no Verdict and
-// no open deadline — a `RecommendationDto` is still returned so the UI
-// can show the same confidence/provenance affordances every other
-// capability screen already does, but `grounded_in` will always be
-// empty and `confidence` will always be `"insufficient_data"` here,
-// since there's no prior verdict to ground an answer in.
+// Ask Athena — persistent, free-form chat. Mirrors
+// `commands::ai::ask_athena_command` / `athena_reasoning::capabilities::ask_athena`
+// after the tool-calling rebuild: `evidence`/`grounded_in`/`confidence`
+// now reflect whatever the backend's closed 5-tool dispatcher
+// (`commands::ask_athena_tools`) actually found for this message — no
+// longer always empty/`insufficient_data`. `conversationId` (Part 2)
+// lets the backend send the last ~6 turns of *this* conversation as
+// context; omit it (or pass a brand-new id with no history yet) for a
+// fresh conversation. `overwhelmed` (Part 4's "explain like I'm
+// overwhelmed" chip) asks for one prioritized next action instead of a
+// full answer. `skipProviders` (Part 4's "try again" action) excludes
+// the provider that just answered for this one retry only.
 // ---------------------------------------------------------------------
 
-/** Sends one chat message to Ask Athena and returns its response. Stateless per call — the screen keeps its own scrollback in local state. */
-export async function askAthena(message: string): Promise<RecommendationDto> {
-  return invoke<RecommendationDto>("ask_athena_command", { message });
+/** Sends one chat message to Ask Athena and returns its response. The screen keeps its own scrollback in local state; this call is otherwise stateless except for what `conversationId` pulls in as context. */
+export async function askAthena(
+  message: string,
+  conversationId?: string | null,
+  overwhelmed?: boolean,
+  skipProviders?: string[],
+): Promise<RecommendationDto> {
+  return invoke<RecommendationDto>("ask_athena_command", {
+    message,
+    conversationId: conversationId ?? null,
+    overwhelmed: overwhelmed ?? false,
+    skipProviders: skipProviders ?? [],
+  });
+}
+
+/** Mirrors `commands::ask_athena_capture::ChatDeadlineDraft` — a heuristically-parsed, unconfirmed deadline ready to prefill an inline confirmation card. Never auto-committed; the frontend calls `addDeadlinesToSemester` only once the student edits and confirms it. */
+export interface ChatDeadlineDraftDto {
+  title: string;
+  due_at: string;
+  category: DeadlineCategory;
+  leverage_class: LeverageClass;
+}
+
+/** Heuristically parses a chat message ("add a deadline: ... due friday 11:59pm") into a draft, or `null` if it doesn't look like a capture request. Zero network/AI dependency — safe to call on every message, even fully offline. `localDate` (`YYYY-MM-DD`) resolves relative terms like "tomorrow"/"next wednesday"; omitted, the backend uses its own system clock. */
+export async function parseChatDeadlineDraft(
+  message: string,
+  localDate?: string,
+): Promise<ChatDeadlineDraftDto | null> {
+  return invoke<ChatDeadlineDraftDto | null>("parse_chat_deadline_draft", {
+    message,
+    localDate: localDate ?? null,
+  });
 }
 
 // ---------------------------------------------------------------------

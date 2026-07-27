@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
   addDeadlinesToSemester,
+  extractDeadlinesFromCalendar,
   extractDeadlinesFromClassroom,
   extractDeadlinesFromGmail,
   extractDeadlinesFromNotion,
@@ -9,11 +10,12 @@ import {
 } from '../../ipc/bindings';
 import styles from './Semester.module.css';
 
-type ConnectorKey = 'gmail' | 'google_classroom' | 'notion';
+type ConnectorKey = 'gmail' | 'google_classroom' | 'google_calendar' | 'notion';
 
 const CONNECTOR_LABELS: Record<ConnectorKey, string> = {
   gmail: 'Gmail',
   google_classroom: 'Google Classroom',
+  google_calendar: 'Google Calendar',
   notion: 'Notion',
 };
 
@@ -44,16 +46,17 @@ interface Candidate {
  * for no navigational benefit.
  *
  * Calls the new heuristic extraction commands
- * (`extract_deadlines_from_gmail/_classroom/_notion` — Feature 3),
+ * (`extract_deadlines_from_gmail/_classroom/_calendar/_notion` — Feature 3),
  * which read only the already-synced snapshot tables (no new network
  * calls) and return `ParsedDeadlineDto[]`, the same shape
  * `import_calendar_ics` already returns for calendar import. Extraction
  * pre-fills `due_at` wherever its heuristic could find a date (always,
- * for Classroom, since coursework already carries a structured
- * `due_at`; sometimes, for Gmail/Notion, which only have free text to
- * scan) — the person can still edit or clear any field before
- * including a row, same "extraction always ends in a confirmation
- * step, never auto-commits" rule as calendar/PDF/CSV import.
+ * for Classroom and Calendar, since both already carry a structured
+ * due date/`starts_at`; sometimes, for Gmail/Notion, which only have
+ * free text to scan) — the person can still edit or clear any field
+ * before including a row, same "extraction always ends in a
+ * confirmation step, never auto-commits" rule as calendar/PDF/CSV
+ * import.
  */
 export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<void> }) {
   const [connector, setConnector] = useState<ConnectorKey>('google_classroom');
@@ -71,7 +74,9 @@ export function PullDeadlinesPanel({ onAdded }: { onAdded: () => void | Promise<
           ? await extractDeadlinesFromGmail()
           : connector === 'notion'
             ? await extractDeadlinesFromNotion()
-            : await extractDeadlinesFromClassroom();
+            : connector === 'google_calendar'
+              ? await extractDeadlinesFromCalendar()
+              : await extractDeadlinesFromClassroom();
 
       const rows: Candidate[] = parsed.map((p, i) => ({
         key: `${connector}-${i}-${p.title}`,

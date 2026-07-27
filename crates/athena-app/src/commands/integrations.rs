@@ -16,7 +16,8 @@ use std::sync::Mutex;
 
 use athena_data::repositories::integrations as integrations_repo;
 use athena_ingestion::connectors::{
-    calendar_ics, codeforces, csv_import, github, gmail, google_classroom, leetcode, notion, oauth2, pdf_import,
+    calendar_ics, codeforces, csv_import, github, gmail, google_calendar, google_classroom, leetcode, notion,
+    oauth2, pdf_import,
 };
 use athena_ingestion::IngestionError;
 use rusqlite::Connection;
@@ -62,6 +63,20 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let year = if m <= 2 { y + 1 } else { y };
     (year, m, d)
 }
+/// The inverse of `civil_from_days` (same Howard Hinnant `days_from_civil`/
+/// `civil_from_days` algorithm pair) — only `find_date_in_text_relative`
+/// needs this direction (converting a resolved `today` back into a day
+/// count so a weekday/relative offset can be added to it), so it's added
+/// alongside rather than kept in the original one-directional helper.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m as i64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
 
 // ---------------------------------------------------------------------
 // Status
@@ -85,7 +100,7 @@ pub struct DataSourceDto {
 fn to_dto(row: athena_data::repositories::integrations::DataSourceRow) -> DataSourceDto {
     let has_credential = match row.source_key.as_str() {
         "github" => keychain::has_github_token(),
-        "gmail" | "google_classroom" | "notion" => keychain::has_oauth_tokens(&row.source_key),
+        "gmail" | "google_classroom" | "google_calendar" | "notion" => keychain::has_oauth_tokens(&row.source_key),
         _ => false,
     };
     DataSourceDto {
@@ -496,7 +511,7 @@ struct OAuthEndpointConfig {
 
 fn oauth_endpoint_for(source_key: &str) -> Result<OAuthEndpointConfig, String> {
     match source_key {
-        "gmail" | "google_classroom" => Ok(OAuthEndpointConfig {
+        "gmail" | "google_classroom" | "google_calendar" => Ok(OAuthEndpointConfig {
             token_url: gmail::TOKEN_URL,
             client_id: google_client_id()?,
             client_secret: google_client_secret(),
@@ -940,6 +955,148 @@ pub fn list_classroom_announcements(
         .collect())
 }
 
+// --- Google Calendar ---
+//
+// Fourth Google-backed OAuth connector, added as a Notion alternative
+// for pulling deadlines: reuses the same shared Google OAuth client/
+// token endpoint as Gmail/Classroom (`run_google_oauth_connect`), so it
+// needed no new client credentials and no new redirect URI to
+// register — unlike Notion, which requires one fixed, pre-registered
+// port (`NOTION_OAUTH_PORT`/`start_notion_oauth` below). This connector
+// goes through `run_google_oauth_connect`'s existing ephemeral-loopback
+// -port flow (`LoopbackListener::bind()`, ephemeral, a new free port
+// each attempt) instead, so it cannot hit the "port already in use"
+// failure a fixed-port flow can if a previous attempt's listener is
+// still pending.
+
+#[tauri::command]
+pub async fn start_google_calendar_oauth(db: State<'_, Mutex<Connection>>) -> Result<DataSourceDto, String> {
+    run_google_oauth_connect(&db, "google_calendar", google_calendar::SCOPE).await?;
+    run_google_calendar_sync(&db).await
+}
+
+#[tauri::command]
+pub fn disconnect_google_calendar(db: State<'_, Mutex<Connection>>) -> Result<(), String> {
+    disconnect_oauth_source(&db, "google_calendar")
+}
+
+/// See `run_codeforces_sync`'s doc comment — same reasoning, for the
+/// scheduler's Calendar tick and `start_google_calendar_oauth`'s
+/// immediate first sync.
+pub async fn run_google_calendar_sync(db: &Mutex<Connection>) -> Result<DataSourceDto, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_syncing(&conn, "google_calendar").map_err(|e| e.to_string())?;
+    }
+
+    let Some(mut access_token) = get_stored_access_token("google_calendar")? else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(
+            &conn,
+            "google_calendar",
+            "not connected — connect Google Calendar first",
+        )
+        .map_err(|e| e.to_string())?;
+        let row = integrations_repo::get_data_source(&conn, "google_calendar")
+            .map_err(|e| e.to_string())?
+            .ok_or("google_calendar data_source row missing")?;
+        return Ok(to_dto(row));
+    };
+
+    let mut events_result = google_calendar::fetch_events(&access_token).await;
+    if let Err(IngestionError::AuthExpired(_)) = &events_result {
+        access_token = refresh_oauth_token("google_calendar").await?;
+        events_result = google_calendar::fetch_events(&access_token).await;
+    }
+
+    match events_result {
+        Ok(events) => {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            for event in events {
+                integrations_repo::upsert_calendar_event(
+                    &conn,
+                    &integrations_repo::NewCalendarEvent {
+                        event_id: event.event_id,
+                        title: event.title,
+                        starts_at: event.starts_at,
+                        location: event.location,
+                        description: event.description,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            integrations_repo::mark_synced_ok(&conn, "google_calendar", &now_iso8601())
+                .map_err(|e| e.to_string())?;
+        }
+        Err(e) => {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            integrations_repo::mark_synced_error(&conn, "google_calendar", &e.to_string())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let row = integrations_repo::get_data_source(&conn, "google_calendar")
+        .map_err(|e| e.to_string())?
+        .ok_or("google_calendar data_source row missing")?;
+    Ok(to_dto(row))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarEventDto {
+    pub event_id: String,
+    pub title: String,
+    pub starts_at: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub fetched_at: String,
+}
+
+#[tauri::command]
+pub fn list_calendar_events(db: State<'_, Mutex<Connection>>) -> Result<Vec<CalendarEventDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_calendar_events(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| CalendarEventDto {
+            event_id: r.event_id,
+            title: r.title,
+            starts_at: r.starts_at,
+            location: r.location,
+            description: r.description,
+            fetched_at: r.fetched_at,
+        })
+        .collect())
+}
+
+/// Calendar events already carry a structured `starts_at` (when Google
+/// supplied one — an all-day event's `date`-only shape still lands
+/// here as a date, just without a time component), so — like
+/// Classroom's version above — this is close to a straight mapping.
+/// Events with no `starts_at` at all are skipped, same "candidates the
+/// person can confidently date" reasoning `ParsedDeadlineDto::due_at`
+/// (non-optional) requires everywhere else.
+#[tauri::command]
+pub fn extract_deadlines_from_calendar(
+    db: State<'_, Mutex<Connection>>,
+) -> Result<Vec<ParsedDeadlineDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_calendar_events(&conn).map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|event| {
+            event.starts_at.map(|due_at| ParsedDeadlineDto {
+                title: event.title,
+                category: "academic".to_string(),
+                due_at,
+                leverage_class: "medium".to_string(),
+                notes: event.description,
+            })
+        })
+        .collect())
+}
+
 // --- Notion (§1.10) ---
 
 /// Notion's integration settings require the OAuth redirect URI to be
@@ -1359,6 +1516,120 @@ fn find_date_in_text(text: &str) -> Option<String> {
     None
 }
 
+/// Extends `find_date_in_text` (unchanged above, still the sole date
+/// parser for Gmail/Notion/Classroom extraction) with weekday names
+/// ("friday", "next wednesday") and relative terms ("today", "tomorrow",
+/// "tonight") for Ask Athena's chat-native deadline capture
+/// (`commands::ask_athena_capture`) — a messy student typing "postcolonial
+/// essay due friday 11:59pm" has no `YYYY-MM-DD`/`MM/DD/YYYY` for the
+/// original heuristic to find. Tries the original absolute-date
+/// patterns first (unchanged, still wins if present), then falls back
+/// to weekday/relative matching against `today` (the caller's local
+/// calendar day, `(year, month, day)` — this function still takes no
+/// date/time dependency of its own; `commands::ask_athena_capture`
+/// resolves "today" once and passes it in, same convention every other
+/// date helper in this crate already follows). Also scans for a
+/// trailing time-of-day (`11:59pm`, `5pm`, `23:30`) to replace the
+/// default end-of-day time when one is present, since a chat message is
+/// far more likely to state a time explicitly than a Gmail snippet is.
+///
+/// Deliberately approximate on "next `<weekday>`": colloquial usage is
+/// genuinely ambiguous ("next Friday" said on a Monday usually just
+/// means the upcoming Friday, not the Friday after), so this treats
+/// "next X" the same as plain "X" *unless* today already is X, in which
+/// case "next X" skips forward a full week rather than resolving to
+/// today — a reasonable, documented heuristic rather than a claim of
+/// linguistic precision.
+pub(crate) fn find_date_in_text_relative(text: &str, today: (i64, u32, u32)) -> Option<String> {
+    if let Some(absolute) = find_date_in_text(text) {
+        return Some(apply_time_of_day(&absolute, text));
+    }
+
+    let lower = text.to_lowercase();
+    let (today_y, today_m, today_d) = today;
+    let today_days = days_from_civil(today_y, today_m, today_d);
+
+    let day_offset = if lower.contains("tomorrow") {
+        Some(1)
+    } else if lower.contains("today") || lower.contains("tonight") {
+        Some(0)
+    } else {
+        const WEEKDAYS: [&str; 7] =
+            ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+        WEEKDAYS.iter().enumerate().find_map(|(idx, name)| {
+            if !lower.contains(name) {
+                return None;
+            }
+            let today_weekday = ((today_days % 7 + 7) % 7 + 4) % 7; // epoch day 0 (1970-01-01) was a Thursday.
+            let mut diff = (idx as i64 - today_weekday + 7) % 7;
+            if lower.contains(&format!("next {name}")) && diff == 0 {
+                diff = 7;
+            }
+            Some(diff)
+        })
+    };
+
+    let day_offset = day_offset?;
+    let (year, month, day) = civil_from_days(today_days + day_offset);
+    let default = format!("{year:04}-{month:02}-{day:02}T23:59:00");
+    Some(apply_time_of_day(&default, text))
+}
+
+/// Scans for a `H:MMam/pm`, `Ham/pm`, or 24-hour `HH:MM` time-of-day
+/// substring and, if found, replaces `due_at`'s time component with it
+/// — otherwise returns `due_at` unchanged (still end-of-day, the
+/// original heuristic's honest default when no time is stated).
+fn apply_time_of_day(due_at: &str, text: &str) -> String {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            let mut hour: u32 = lower[start..i].parse().unwrap_or(25);
+            let mut minute: u32 = 0;
+            if i < bytes.len() && bytes[i] == b':' {
+                let mstart = i + 1;
+                let mut j = mstart;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > mstart {
+                    minute = lower[mstart..j].parse().unwrap_or(0);
+                    i = j;
+                }
+            }
+            let rest = &lower[i..];
+            if let Some(meridiem_rest) = rest.strip_prefix("am") {
+                let _ = meridiem_rest;
+                if hour == 12 {
+                    hour = 0;
+                }
+                if hour <= 12 {
+                    return format!("{}T{hour:02}:{minute:02}:00", &due_at[..10]);
+                }
+            } else if let Some(meridiem_rest) = rest.strip_prefix("pm") {
+                let _ = meridiem_rest;
+                if hour < 12 {
+                    hour += 12;
+                }
+                if hour <= 23 {
+                    return format!("{}T{hour:02}:{minute:02}:00", &due_at[..10]);
+                }
+            } else if minute > 0 && hour < 24 {
+                // Bare 24-hour "HH:MM" with no am/pm suffix.
+                return format!("{}T{hour:02}:{minute:02}:00", &due_at[..10]);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    due_at.to_string()
+}
+
 /// Gmail messages carry no structured due date, so this is genuine text
 /// heuristics over the subject + snippet already synced into
 /// `gmail_message_snapshots` — a message with no date-shaped text in
@@ -1495,5 +1766,49 @@ mod tests {
         // "hello" -> "aGVsbG8="
         let bytes = decode_base64("aGVsbG8=").unwrap();
         assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn find_date_in_text_relative_still_prefers_an_absolute_date_when_present() {
+        // 2026-07-27 is a Monday.
+        let today = (2026, 7, 27);
+        let result = find_date_in_text_relative("due 2026-08-10, don't forget", today);
+        assert_eq!(result.as_deref(), Some("2026-08-10T23:59:00"));
+    }
+
+    #[test]
+    fn find_date_in_text_relative_resolves_tomorrow() {
+        let today = (2026, 7, 27); // Monday
+        let result = find_date_in_text_relative("remind me the lab report is due tomorrow", today);
+        assert_eq!(result.as_deref(), Some("2026-07-28T23:59:00"));
+    }
+
+    #[test]
+    fn find_date_in_text_relative_resolves_the_upcoming_named_weekday() {
+        let today = (2026, 7, 27); // Monday
+        let result = find_date_in_text_relative("postcolonial essay due friday 11:59pm", today);
+        assert_eq!(result.as_deref(), Some("2026-07-31T23:59:00"));
+    }
+
+    #[test]
+    fn find_date_in_text_relative_next_weekday_skips_a_week_only_when_today_matches() {
+        // Today is a Monday, "next monday" should resolve one week ahead
+        // rather than to today.
+        let today = (2026, 7, 27);
+        let result = find_date_in_text_relative("essay due next monday", today);
+        assert_eq!(result.as_deref(), Some("2026-08-03T23:59:00"));
+    }
+
+    #[test]
+    fn find_date_in_text_relative_parses_a_stated_time_of_day() {
+        let today = (2026, 7, 27); // Monday
+        let result = find_date_in_text_relative("due wednesday 5pm", today);
+        assert_eq!(result.as_deref(), Some("2026-07-29T17:00:00"));
+    }
+
+    #[test]
+    fn find_date_in_text_relative_returns_none_when_nothing_date_shaped_is_present() {
+        let today = (2026, 7, 27);
+        assert!(find_date_in_text_relative("just checking in, no due date here", today).is_none());
     }
 }

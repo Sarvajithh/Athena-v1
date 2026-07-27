@@ -1,893 +1,506 @@
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from 'react';
+import { MessageCircle, Send, Plus, X } from 'lucide-react';
+import {
+  askAthena,
+  parseChatDeadlineDraft,
+  addDeadlinesToSemester,
+  saveAskAthenaMessage,
+  listAskAthenaConversations,
+  getAskAthenaConversation,
+  deleteAskAthenaConversation,
+  type RecommendationDto,
+  type AskAthenaMessageDto,
+  type AskAthenaConversationDto,
+  type ChatDeadlineDraftDto,
+  type DeadlineCategory,
+  type LeverageClass,
+} from '../../ipc/bindings';
+import { ConfidenceBadge } from '../../components/shared/ConfidenceBadge';
+import styles from './AskAthena.module.css';
 
 /**
- * Mirrors the Rust `AppVersionInfo` struct returned by the
- * `get_app_version` command (crates/athena-app/src/commands/mod.rs).
+ * Ask Athena — persistent, free-form chat (06_AI_ENGINE.md, additive
+ * capability). This screen was previously overwritten with a copy of
+ * `src/ipc/bindings.ts` (confirmed via `git log` — the file compiled
+ * only because it happened to re-export the same named bindings; it
+ * had no default export, so `router.tsx`'s `lazy(() => import(...))`
+ * could never actually render it). This is the real component,
+ * rebuilt against the CSS module that was already sitting here
+ * untouched (`AskAthena.module.css`), which is what the class names
+ * below are matched to.
+ *
+ * Persona: a messy, overwhelmed student typing vague questions at 1am
+ * on a bad connection (see the rebuild brief). Every design choice
+ * below is in service of that — starter chips so an empty chat isn't
+ * an empty box, an "explain like I'm overwhelmed" toggle for one next
+ * action instead of a wall of options, an honest fallback note when no
+ * AI phrasing was available, and a chat-native deadline-capture card
+ * that never auto-commits.
  */
-export interface AppVersionInfo {
-  version: string;
-}
 
-/** Calls the one proof-of-life IPC command registered in S01. */
-export async function getAppVersion(): Promise<AppVersionInfo> {
-  return invoke<AppVersionInfo>("get_app_version");
-}
+type ChatRole = 'user' | 'athena';
 
-/** Whether credential storage is currently using the local encrypted-file
- * fallback because the OS keychain backend is unavailable (Task 4). */
-export async function isUsingKeychainFallback(): Promise<boolean> {
-  return invoke<boolean>("is_using_keychain_fallback");
-}
-
-// ---------------------------------------------------------------------
-// Onboarding + bootstrap — mirrors
-// crates/athena-app/src/commands/{bootstrap,onboarding}.rs and the
-// underlying athena-data repository row shapes (04_DATA_MODEL.md).
-// Every interface below is a 1:1 mirror of a Rust struct's public
-// fields; no reshaping happens on this side (01_ARCHITECTURE.md §2.1).
-// ---------------------------------------------------------------------
-
-export type LeverageClass = "high" | "medium" | "low";
-export type DeadlineCategory = "academic" | "career" | "research" | "dsa" | "other";
-export type DeadlineStatus = "open" | "done" | "missed";
-export type CourseStatus = "active" | "completed" | "dropped";
-export type Confidence = "confirmed" | "inferred" | "insufficient_data";
-
-export interface MeetingSlot {
-  day: string;
-  start: string;
-  end: string;
-}
-
-export interface ProfileRow {
-  id: number;
-  name: string;
-  institute: string;
-  program: string;
-  current_semester_id: number | null;
-  target_cgpa: number;
-  current_cgpa: number | null;
-  career_target: string;
-  masters_target: string | null;
-  codeforces_handle: string | null;
-  deep_work_window_start: string;
-  deep_work_window_end: string;
-  timezone: string;
-  /** `HH:MM`, 24-hour, local time — when the scheduled daily-questionnaire trigger fires (V7 migration). */
-  routine_questionnaire_time: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SemesterRow {
-  id: number;
-  label: string;
-  starts_on: string;
-  ends_on: string;
-  is_current: boolean;
-  created_at: string;
-}
-
-export interface CourseRow {
-  id: number;
-  semester_id: number;
-  code: string;
-  title: string;
-  credits: number;
-  leverage_class: LeverageClass;
-  instructor: string | null;
-  target_grade: string | null;
-  meeting_pattern: MeetingSlot[];
-  status: CourseStatus;
-  created_at: string;
-}
-
-export interface DeadlineRow {
-  id: number;
-  semester_id: number;
-  course_id: number | null;
-  title: string;
-  category: DeadlineCategory;
-  due_at: string;
-  leverage_class: LeverageClass;
-  status: DeadlineStatus;
-  created_at: string;
-  notes: string | null;
-}
-
-export interface DecisionRow {
-  id: number;
-  semester_id: number;
-  decision_type: string;
-  description: string;
-  challenge_fired: boolean;
-  challenge_reasoning: string | null;
-  final_outcome: "kept" | "reversed" | "overridden" | null;
-  decided_at: string;
-}
-
-export interface RankedCandidateDto {
-  id: number;
-  headline: string;
-  reasoning: string;
-}
-
-export interface VerdictDto {
-  headline: string;
-  reasoning: string;
-  confidence: Confidence;
-  grounded_in_deadline_id: number | null;
-  /** Populated only when the Closeness Threshold trips (09_DECISION_ENGINE.md §4). */
-  runners_up: RankedCandidateDto[];
-}
-
-// ---------------------------------------------------------------------
-// Adaptive Planner — mirrors crates/athena-app/src/commands/planner.rs
-// and athena_data::repositories::disruption (08_ADAPTIVE_PLANNER.md).
-// ---------------------------------------------------------------------
-
-export type DisruptionType =
-  | "external_interrupt"
-  | "surprise_workload"
-  | "cancelled_class"
-  | "unexpected_opportunity"
-  | "illness"
-  | "early_finish";
-
-export interface DisruptionRow {
-  id: number;
-  semester_id: number;
-  date: string;
-  disruption_type: DisruptionType;
-  duration_minutes: number;
-  affects_deep_work_window: boolean;
-  linked_deadline_id: number | null;
-  note: string | null;
-  logged_at: string;
-  recompute_triggered: boolean;
-  recompute_headline: string | null;
-  recompute_reasoning: string | null;
-}
-
-export interface DisruptionDto {
-  id: number;
-  date: string;
-  disruption_type: DisruptionType;
-  duration_minutes: number;
-  affects_deep_work_window: boolean;
-  linked_deadline_id: number | null;
-  note: string | null;
-  logged_at: string;
-}
-
-export interface BootstrapState {
-  has_profile: boolean;
-  profile: ProfileRow | null;
-  current_semester: SemesterRow | null;
-  courses: CourseRow[];
-  deadlines: DeadlineRow[];
-  career_deadlines: DeadlineRow[];
-  decisions: DecisionRow[];
-  verdict: VerdictDto;
-  /** §3.1's `available_minutes_tonight`, after today's logged disruptions. */
-  available_minutes_tonight: number;
-  base_window_minutes: number;
-  today_disruptions: DisruptionRow[];
-  recent_disruptions: DisruptionRow[];
-}
-
-/**
- * The one read command every screen boots from (01_ARCHITECTURE.md §2.1).
- * `localDate` (`YYYY-MM-DD`, the user's local calendar day) is optional —
- * omit it to skip today's-disruption lookup (e.g. before onboarding).
- */
-export async function getBootstrapState(localDate?: string): Promise<BootstrapState> {
-  return invoke<BootstrapState>("get_bootstrap_state", { localDate: localDate ?? null });
-}
-
-export interface LogDisruptionInput {
-  date: string;
-  disruption_type: DisruptionType;
-  duration_minutes: number;
-  affects_deep_work_window: boolean;
-  linked_deadline_id: number | null;
-  note: string | null;
-}
-
-export interface ReplanResultDto {
-  disruption: DisruptionDto;
-  verdict: VerdictDto;
-  available_minutes_tonight: number;
-  base_window_minutes: number;
-  substituted: boolean;
-}
-
-/** Logs one disruption and returns the Adaptive Planner's recomputed verdict (08_ADAPTIVE_PLANNER.md). */
-export async function logDisruption(input: LogDisruptionInput): Promise<ReplanResultDto> {
-  return invoke<ReplanResultDto>("log_disruption", { input });
-}
-
-/** The explainability trail behind every recompute (§5). */
-export async function listRecentDisruptions(limit = 10): Promise<DisruptionDto[]> {
-  return invoke<DisruptionDto[]>("list_recent_disruptions", { limit });
-}
-
-// ---------------------------------------------------------------------
-// Daily / weekly routine questionnaires (V6 migration)
-// ---------------------------------------------------------------------
-
-export interface DailyRoutineResponseDto {
-  id: number;
-  date: string;
-  energy_level: number;
-  hours_available_tonight: number;
-  had_disruption_today: boolean;
-  disruption_note: string | null;
-  focus_rating: number;
-  submitted_at: string;
-}
-
-export interface SubmitDailyRoutineInput {
-  date: string;
-  energy_level: number;
-  hours_available_tonight: number;
-  had_disruption_today: boolean;
-  disruption_note: string | null;
-  focus_rating: number;
-}
-
-/** Submits today's quick check-in — energy, hours free tonight, focus. */
-export async function submitDailyRoutineResponse(
-  input: SubmitDailyRoutineInput,
-): Promise<DailyRoutineResponseDto> {
-  return invoke<DailyRoutineResponseDto>("submit_daily_routine_response", { input });
-}
-
-/** Whether `date` (`YYYY-MM-DD`) has already been answered — don't nag. */
-export async function hasDailyRoutineResponse(date: string): Promise<boolean> {
-  return invoke<boolean>("has_daily_routine_response", { date });
-}
-
-export async function listRecentDailyRoutineResponses(limit = 14): Promise<DailyRoutineResponseDto[]> {
-  return invoke<DailyRoutineResponseDto[]>("list_recent_daily_routine_responses", { limit });
-}
-
-export interface WeeklyRoutineResponseDto {
-  id: number;
-  week_starting: string;
-  overall_energy_trend: number;
-  satisfaction_with_progress: number;
-  hardest_course_id: number | null;
-  biggest_blocker: string | null;
-  hours_studied_estimate: number | null;
-  wants_deep_work_adjustment: boolean;
-  notes: string | null;
-  submitted_at: string;
-}
-
-export interface SubmitWeeklyRoutineInput {
-  week_starting: string;
-  overall_energy_trend: number;
-  satisfaction_with_progress: number;
-  hardest_course_id: number | null;
-  biggest_blocker: string | null;
-  hours_studied_estimate: number | null;
-  wants_deep_work_adjustment: boolean;
-  notes: string | null;
-}
-
-/** Submits this week's longer, reflective check-in. */
-export async function submitWeeklyRoutineResponse(
-  input: SubmitWeeklyRoutineInput,
-): Promise<WeeklyRoutineResponseDto> {
-  return invoke<WeeklyRoutineResponseDto>("submit_weekly_routine_response", { input });
-}
-
-/** Whether `weekStarting` (`YYYY-MM-DD`, the week's Monday) has already been answered. */
-export async function hasWeeklyRoutineResponse(weekStarting: string): Promise<boolean> {
-  return invoke<boolean>("has_weekly_routine_response", { weekStarting });
-}
-
-export async function listRecentWeeklyRoutineResponses(limit = 8): Promise<WeeklyRoutineResponseDto[]> {
-  return invoke<WeeklyRoutineResponseDto[]>("list_recent_weekly_routine_responses", { limit });
-}
-
-// Scheduled daily-questionnaire trigger's configurable fire time
-// (routine_scheduler.rs / commands/routine.rs). `time` is `HH:MM`,
-// 24-hour, matching the `<input type="time">` element's own value
-// format one-to-one — no client-side reformatting needed either way.
-
-export async function saveRoutineQuestionnaireTime(time: string): Promise<void> {
-  return invoke<void>("save_routine_questionnaire_time", { time });
-}
-
-export async function getRoutineQuestionnaireTime(): Promise<string> {
-  return invoke<string>("get_routine_questionnaire_time");
-}
-
-export interface CreateProfileInput {
-  name: string;
-  institute: string;
-  program: string;
-  target_cgpa: number;
-  current_cgpa: number | null;
-  career_target: string;
-  masters_target: string | null;
-  codeforces_handle: string | null;
-  deep_work_window_start: string;
-  deep_work_window_end: string;
-  timezone: string;
-}
-
-/** Commits Profile Creation (03_ONBOARDING.md §2, Step 5). Returns the new `user_profile.id`. */
-export async function createProfile(input: CreateProfileInput): Promise<number> {
-  return invoke<number>("create_profile", { input });
-}
-
-export interface CourseInput {
-  code: string;
-  title: string;
-  credits: number;
-  leverage_class: LeverageClass;
-  instructor: string | null;
-  target_grade: string | null;
-  meeting_pattern: MeetingSlot[];
-}
-
-export interface DeadlineInput {
-  course_index: number | null;
-  title: string;
-  category: DeadlineCategory;
-  due_at: string;
-  leverage_class: LeverageClass;
-  notes: string | null;
-}
-
-export interface CommitSemesterSetupInput {
-  label: string;
-  starts_on: string;
-  ends_on: string;
-  courses: CourseInput[];
-  deadlines: DeadlineInput[];
-  is_first_run: boolean;
-}
-
-/** Commits Semester Setup (03_ONBOARDING.md §3, Step 5). Returns the new `semesters.id`. */
-export async function commitSemesterSetup(input: CommitSemesterSetupInput): Promise<number> {
-  return invoke<number>("commit_semester_setup", { input });
-}
-
-/** Adds a single course to the *current* semester. Returns the new `courses.id`. */
-export async function addCourseToSemester(input: CourseInput): Promise<number> {
-  return invoke<number>("add_course_to_semester", { input });
-}
-
-export interface DeadlineCandidateInput {
-  course_id: number | null;
-  title: string;
-  category: DeadlineCategory;
-  due_at: string;
-  leverage_class: LeverageClass;
-  notes: string | null;
-}
-
-/** Mirrors `UpdateDeadlineInput` (`commands::deadlines`) — everything Feature 1's edit affordance may change. No `id`/`semester_id`/`course_id`/`status`. */
-export interface UpdateDeadlineInput {
-  title: string;
-  category: DeadlineCategory;
-  due_at: string;
-  leverage_class: LeverageClass;
-  notes: string | null;
-}
-
-/** Edits one existing deadline in place. Returns the row as it now stands. */
-export async function updateDeadline(id: number, input: UpdateDeadlineInput): Promise<DeadlineRow> {
-  return invoke<DeadlineRow>("update_deadline", { id, input });
-}
-
-/** Deletes one deadline outright. Returns `false` if `id` was already gone rather than throwing. */
-export async function deleteDeadline(id: number): Promise<boolean> {
-  return invoke<boolean>("delete_deadline", { id });
-}
-
-/** Inserts one or more pulled/normalized deadlines against the current semester. Returns their new `deadlines.id` values. */
-export async function addDeadlinesToSemester(candidates: DeadlineCandidateInput[]): Promise<number[]> {
-  return invoke<number[]>("add_deadlines_to_semester", { candidates });
-}
-
-/** Semester → Advanced → "Seed sample data". Inserts a sample semester, courses, deadlines, and disruptions via the existing repositories, so the planner can be exercised without hand-filling a semester. Returns the new `semesters.id`. */
-export async function seedSampleData(): Promise<number> {
-  return invoke<number>("seed_sample_data");
-}
-
-// ---------------------------------------------------------------------
-// Integrations — mirrors crates/athena-app/src/commands/integrations.rs
-// (07_INTEGRATIONS.md). Every interface below is a 1:1 mirror of a Rust
-// DTO's public fields, same "no reshaping on this side" rule as above.
-// ---------------------------------------------------------------------
-
-export type SourceKey =
-  | "codeforces"
-  | "leetcode"
-  | "github"
-  | "calendar_ics"
-  | "pdf_import"
-  | "csv_import"
-  | "manual"
-  | "gmail"
-  | "google_classroom"
-  | "notion";
-
-export type SyncStatus = "disconnected" | "idle" | "syncing" | "ok" | "error";
-
-export interface DataSourceDto {
-  source_key: SourceKey;
-  kind: "poll" | "import" | "always_on" | "oauth_poll";
-  status: SyncStatus;
-  last_synced_at: string | null;
-  last_error: string | null;
-  config_json: string | null;
-  has_credential: boolean;
-}
-
-/** Every connector's current status (§5) — what the Connectors step boots from. */
-export async function listDataSources(): Promise<DataSourceDto[]> {
-  return invoke<DataSourceDto[]>("list_data_sources");
-}
-
-// --- Codeforces (§1.1) ---
-
-export interface CodeforcesSnapshotDto {
-  handle: string;
-  rating: number | null;
-  max_rating: number | null;
-  rank: string | null;
-  solved_count: number;
-  fetched_at: string;
-}
-
-/** Saves the handle and syncs immediately. Never throws on a failed sync — read `status`/`last_error` off the result. */
-export async function syncCodeforces(handle: string): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("sync_codeforces", { handle });
-}
-
-export async function getLatestCodeforcesSnapshot(): Promise<CodeforcesSnapshotDto | null> {
-  return invoke<CodeforcesSnapshotDto | null>("get_latest_codeforces_snapshot");
-}
-
-// --- LeetCode (§1.2) ---
-
-export interface DsaPracticeLogDto {
-  handle: string;
-  total_solved: number;
-  easy_solved: number;
-  medium_solved: number;
-  hard_solved: number;
-  fetched_at: string;
-}
-
-export async function syncLeetCode(handle: string): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("sync_leetcode", { handle });
-}
-
-export async function getLatestLeetCodeSnapshot(): Promise<DsaPracticeLogDto | null> {
-  return invoke<DsaPracticeLogDto | null>("get_latest_leetcode_snapshot");
-}
-
-// --- GitHub (§1.3) ---
-
-/** `token` empty/whitespace clears the stored token. Never leaves the keychain otherwise (§4). */
-export async function saveGithubToken(token: string): Promise<void> {
-  return invoke<void>("save_github_token", { token });
-}
-
-export async function deleteGithubToken(): Promise<void> {
-  return invoke<void>("delete_github_token");
-}
-
-export interface LinkedGithubRepoDto {
-  repo_full_name: string;
-  added_at: string;
-}
-
-export async function linkGithubRepo(repoFullName: string): Promise<void> {
-  return invoke<void>("link_github_repo", { repoFullName });
-}
-
-export async function unlinkGithubRepo(repoFullName: string): Promise<void> {
-  return invoke<void>("unlink_github_repo", { repoFullName });
-}
-
-export async function listLinkedGithubRepos(): Promise<LinkedGithubRepoDto[]> {
-  return invoke<LinkedGithubRepoDto[]>("list_linked_github_repos");
-}
-
-export interface ProjectStatusSnapshotDto {
-  repo_full_name: string;
-  commit_count_30d: number;
-  open_pr_count: number;
-  open_issue_count: number;
-  last_commit_at: string | null;
-  fetched_at: string;
-}
-
-/** Syncs every linked repo; a single repo's failure doesn't abort the rest (see Rust doc comment). */
-export async function syncGithub(): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("sync_github");
-}
-
-export async function listProjectStatusSnapshots(): Promise<ProjectStatusSnapshotDto[]> {
-  return invoke<ProjectStatusSnapshotDto[]>("list_project_status_snapshots");
-}
-
-// --- Gmail (§1.8, OAuth amendment) ---
-//
-// `start*Oauth` opens the system browser, waits for the user to
-// complete consent, exchanges the code, stores tokens in the OS
-// keychain, and runs the first sync — one round trip, same
-// "save + sync immediately" precedent as `syncCodeforces`. Never
-// throws on a failed sync; read `status`/`last_error` off the result.
-
-/** Opens the browser for Gmail consent and runs the first sync once granted. */
-export async function startGmailOauth(): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("start_gmail_oauth");
-}
-
-export async function disconnectGmail(): Promise<void> {
-  return invoke<void>("disconnect_gmail");
-}
-
-export interface GmailMessageDto {
-  message_id: string;
-  thread_id: string | null;
-  sender: string | null;
-  subject: string | null;
-  received_at: string | null;
-  snippet: string | null;
-  fetched_at: string;
-}
-
-export async function listGmailMessages(): Promise<GmailMessageDto[]> {
-  return invoke<GmailMessageDto[]>("list_gmail_messages");
-}
-
-// --- Google Classroom (§1.9, OAuth amendment) ---
-
-/** Opens the browser for Classroom consent and runs the first sync once granted. */
-export async function startGoogleClassroomOauth(): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("start_google_classroom_oauth");
-}
-
-export async function disconnectGoogleClassroom(): Promise<void> {
-  return invoke<void>("disconnect_google_classroom");
-}
-
-export interface ClassroomCourseDto {
-  course_id: string;
-  name: string;
-  section: string | null;
-  fetched_at: string;
-}
-
-export async function listClassroomCourses(): Promise<ClassroomCourseDto[]> {
-  return invoke<ClassroomCourseDto[]>("list_classroom_courses");
-}
-
-export interface ClassroomCourseworkDto {
-  coursework_id: string;
-  course_id: string;
-  title: string;
-  due_at: string | null;
-  state: string | null;
-  fetched_at: string;
-}
-
-export async function listClassroomCoursework(): Promise<ClassroomCourseworkDto[]> {
-  return invoke<ClassroomCourseworkDto[]>("list_classroom_coursework");
-}
-
-export interface ClassroomAnnouncementDto {
-  announcement_id: string;
-  course_id: string;
-  text: string | null;
-  posted_at: string | null;
-  fetched_at: string;
-}
-
-export async function listClassroomAnnouncements(): Promise<ClassroomAnnouncementDto[]> {
-  return invoke<ClassroomAnnouncementDto[]>("list_classroom_announcements");
-}
-
-// --- Notion (§1.10, OAuth amendment) ---
-
-/** Opens the browser for Notion consent and runs the first sync once granted. */
-export async function startNotionOauth(): Promise<DataSourceDto> {
-  return invoke<DataSourceDto>("start_notion_oauth");
-}
-
-export async function disconnectNotion(): Promise<void> {
-  return invoke<void>("disconnect_notion");
-}
-
-export interface NotionPageDto {
-  page_id: string;
-  title: string | null;
-  url: string | null;
-  parent_database_id: string | null;
-  last_edited_at: string | null;
-  fetched_at: string;
-}
-
-export async function listNotionPages(): Promise<NotionPageDto[]> {
-  return invoke<NotionPageDto[]>("list_notion_pages");
-}
-
-// --- Calendar Import (§1.4), CSV Import (§1.6), PDF Import (§1.5) ---
-//
-// None of these three commands writes to the database: Semester Setup's
-// wizard (where every one of these is triggered, per §1.4/§1.5/§1.6's
-// own "through Semester Setup") runs before `commitSemesterSetup` ever
-// creates the `semesters` row `deadlines` would need to reference. Each
-// command below only parses/extracts and hands back rows already shaped
-// like `DeadlineInput`, for the wizard to merge into its own local
-// Deadlines-step state — reviewable, editable, removable — and commit
-// the one existing way, alongside everything else (see the matching
-// Rust doc comment in `commands::integrations` for the full reasoning).
-
-/** A parsed source row, shaped exactly like `DeadlineInput` minus `course_index` (the wizard fills that in, if any). */
-export interface ParsedDeadlineDto {
-  title: string;
-  category: DeadlineCategory;
-  due_at: string;
-  leverage_class: LeverageClass;
-  notes: string | null;
-}
-
-/** `icsContent` is the raw `.ics` file text, already read client-side via the File API. Nothing is written to disk here — the caller stages the returned rows into the wizard's Deadlines step. */
-export async function importCalendarIcs(icsContent: string): Promise<ParsedDeadlineDto[]> {
-  return invoke<ParsedDeadlineDto[]>("import_calendar_ics", { icsContent });
-}
-
-// --- Deadline extraction from already-synced connector data (§1.8/§1.9/§1.10 amendment) ---
-//
-// Same "extraction always ends in a confirmation step, never
-// auto-commits" rule as calendar/PDF/CSV import above, and the same
-// `ParsedDeadlineDto` shape — these three read only the snapshot tables
-// already populated by `listGmailMessages`/`listClassroomCoursework`/
-// `listNotionPages` (no new network calls), apply simple heuristic
-// due-date extraction, and hand back candidates for the "Pull deadlines"
-// screen to review/edit before calling the existing `addDeadlinesToSemester`.
-
-/** Heuristically parses due dates out of already-synced Gmail message subjects/snippets. No network call — reads `gmail_message_snapshots`. */
-export async function extractDeadlinesFromGmail(): Promise<ParsedDeadlineDto[]> {
-  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_gmail");
-}
-
-/** Classroom coursework already carries a `due_at` field, so this is close to a straight mapping rather than text heuristics. No network call — reads `classroom_coursework`. */
-export async function extractDeadlinesFromClassroom(): Promise<ParsedDeadlineDto[]> {
-  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_classroom");
-}
-
-/** Heuristically parses due dates out of already-synced Notion page titles. No network call — reads `notion_pages`. */
-export async function extractDeadlinesFromNotion(): Promise<ParsedDeadlineDto[]> {
-  return invoke<ParsedDeadlineDto[]>("extract_deadlines_from_notion");
-}
-
-export interface CsvRowDto {
-  cells: Record<string, string>;
-}
-
-/** Parses only — the person still chooses which column means what before anything is staged. */
-export async function previewCsvImport(csvContent: string): Promise<CsvRowDto[]> {
-  return invoke<CsvRowDto[]>("preview_csv_import", { csvContent });
-}
-
-export interface CandidateAchievementDto {
-  kind: "project" | "publication" | "certification";
-  title: string;
-  source_excerpt: string;
-}
-
-/** `pdfBase64` is the file's raw bytes, base64-encoded client-side (strip any `data:...;base64,` prefix first). Extraction only — nothing is written until the person confirms which candidates to keep and the caller stages them into the wizard's Deadlines step. */
-export async function previewPdfImport(pdfBase64: string): Promise<CandidateAchievementDto[]> {
-  return invoke<CandidateAchievementDto[]>("preview_pdf_import", { pdfBase64 });
-}
-// ---------------------------------------------------------------------
-// AI layer (06_AI_ENGINE.md) — mirrors
-// crates/athena-app/src/commands/ai.rs and `athena_reasoning::Recommendation`.
-// Every capability below returns the identical shape: a typed verdict,
-// grounded reasoning, a confidence class, the evidence IDs it cites, a
-// freshness note, and its provenance (`"template"` when no LLM was
-// available or configured — never a failure state, per §10's
-// offline-first requirement). No screen should ever construct prompt
-// text itself; these functions are the only AI-layer surface exposed
-// to the frontend.
-// ---------------------------------------------------------------------
-
-/** Mirrors `athena_reasoning::Recommendation` — §11's mandatory output shape, identical across every capability below. */
-export interface RecommendationDto {
-  verdict: string;
-  reasoning: string;
-  confidence: Confidence;
-  grounded_in: number[];
-  data_freshness_note: string;
-  /** Provenance: `"claude"`, `"ollama"`, or `"template"` (no LLM involved — still fully grounded, just less fluent). */
-  source: string;
-}
-
-/** Daily Pass, on demand (§4.1) — phrases the same Priority Resolution verdict `getBootstrapState` already computes for Now. */
-export async function getDailyBriefing(): Promise<RecommendationDto> {
-  return invoke<RecommendationDto>("get_daily_briefing");
-}
-
-/** Weekly Digest, on demand (§4.2) — a rollup of the week's already-computed Adaptive Planner verdicts, not a new ranking. */
-export async function getWeeklyPlan(): Promise<RecommendationDto> {
-  return invoke<RecommendationDto>("get_weekly_plan");
-}
-
-/** Weakness Analysis, on demand (§4.4) — a presentation of already-graduated `drift_signals`/`bottlenecks` rows. Honestly returns `insufficient_data` until those tables exist in this schema. */
-export async function getWeaknessAnalysis(): Promise<RecommendationDto> {
-  return invoke<RecommendationDto>("get_weakness_analysis");
-}
-
-/** Saves the cloud provider's API key (§9) — stored exclusively in the OS keychain, same as the GitHub token; never persisted to SQLite. */
-export async function saveAnthropicApiKey(key: string): Promise<void> {
-  return invoke<void>("save_anthropic_api_key", { key });
-}
-
-export async function deleteAnthropicApiKey(): Promise<void> {
-  return invoke<void>("delete_anthropic_api_key");
-}
-
-/** Whether a cloud provider key is currently configured — drives the AI settings panel's "connected" state without ever returning the key itself. */
-export async function hasAnthropicApiKey(): Promise<boolean> {
-  return invoke<boolean>("has_anthropic_api_key");
-}
-
-// Hugging Face token management (free tier — no billing required).
-// Get a token at https://huggingface.co/settings/tokens (role: "Inference").
-// Once saved, the HF provider slots in automatically after Anthropic and
-// before Ollama. `source` in RecommendationDto will read "huggingface".
-
-/** Saves the HF Inference API token to the OS keychain. Never stored in SQLite. */
-export async function saveHfApiKey(key: string): Promise<void> {
-  return invoke<void>("save_hf_api_key", { key });
-}
-
-export async function deleteHfApiKey(): Promise<void> {
-  return invoke<void>("delete_hf_api_key");
-}
-
-/** Whether a HF token is currently configured — drives settings UI "connected" state. */
-export async function hasHfApiKey(): Promise<boolean> {
-  return invoke<boolean>("has_hf_api_key");
-}
-
-// Gemini API key management (free tier — no billing required).
-// Get a key at https://aistudio.google.com/app/apikey. Once saved, the
-// Gemini provider slots in automatically after Anthropic and before
-// Hugging Face/Ollama. `source` in RecommendationDto will read "gemini".
-
-/** Saves the Gemini API key to the OS keychain. Never stored in SQLite. */
-export async function saveGeminiApiKey(key: string): Promise<void> {
-  return invoke<void>("save_gemini_api_key", { key });
-}
-
-export async function deleteGeminiApiKey(): Promise<void> {
-  return invoke<void>("delete_gemini_api_key");
-}
-
-/** Whether a Gemini key is currently configured — drives settings UI "connected" state. */
-export async function hasGeminiApiKey(): Promise<boolean> {
-  return invoke<boolean>("has_gemini_api_key");
-}
-
-// ---------------------------------------------------------------------
-// Ask Athena — persistent, free-form chat (new capability, additive to
-// the four above). Mirrors `commands::ai::ask_athena_command` /
-// `athena_reasoning::capabilities::ask_athena`. Requires no Verdict and
-// no open deadline — a `RecommendationDto` is still returned so the UI
-// can show the same confidence/provenance affordances every other
-// capability screen already does, but `grounded_in` will always be
-// empty and `confidence` will always be `"insufficient_data"` here,
-// since there's no prior verdict to ground an answer in.
-// ---------------------------------------------------------------------
-
-/** Sends one chat message to Ask Athena and returns its response. Stateless per call — the screen keeps its own scrollback in local state. */
-export async function askAthena(message: string): Promise<RecommendationDto> {
-  return invoke<RecommendationDto>("ask_athena_command", { message });
-}
-
-// ---------------------------------------------------------------------
-// Daily routine check-in as an AI conversation — mirrors
-// `commands::ai::generate_daily_routine_questions` /
-// `extract_daily_routine_answers`
-// (`athena_reasoning::capabilities::routine_conversation`). Replaces
-// the old numeric-slider `DailyForm` in `RoutineQuestionnaireCard.tsx`.
-// The frontend still calls the existing, unmodified
-// `submitDailyRoutineResponse` below with the extracted fields plus
-// today's date — this pair only generates and parses the conversation.
-// ---------------------------------------------------------------------
-
-/** Asks Gemini (or whichever provider is configured) for 3-5 contextual check-in questions. Always returns something, even with zero providers configured (deterministic fallback questions). */
-export async function generateDailyRoutineQuestions(contextSummary: string): Promise<string[]> {
-  return invoke<string[]>("generate_daily_routine_questions", { contextSummary });
-}
-
-export interface DailyRoutineExtractionDto {
-  energy_level: number;
-  hours_available_tonight: number;
-  had_disruption_today: boolean;
-  disruption_note: string | null;
-  focus_rating: number;
-}
-
-/** Converts a free-text question/answer transcript into the fields `SubmitDailyRoutineInput` needs (everything except `date`). Always returns something, even with zero providers configured (neutral defaults). */
-export async function extractDailyRoutineAnswers(transcript: string): Promise<DailyRoutineExtractionDto> {
-  return invoke<DailyRoutineExtractionDto>("extract_daily_routine_answers", { transcript });
-}
-
-// ---------------------------------------------------------------------
-// Ask Athena chat history persistence (V9 migration, extended by V10
-// with conversation grouping). Mirrors `commands::ai::AskAthenaMessageDto`
-// / `AskAthenaConversationDto` / `save_ask_athena_message` /
-// `list_ask_athena_conversations` / `get_ask_athena_conversation`
-// field-for-field. ChatGPT/Gemini-style separate conversations rather
-// than one flat scrollback, capped server-side at the 5 most recently
-// active (`ask_athena_history::MAX_RETAINED_CONVERSATIONS` — kept in
-// sync here as `MAX_RETAINED_CONVERSATIONS` purely for the frontend's
-// own display logic, never enforced client-side). Additive alongside
-// `askAthena` above and the screen's existing local `messages` state —
-// `AskAthena.tsx` calls `saveAskAthenaMessage` right alongside each
-// `setMessages` call (once for the user's turn, once for Athena's
-// reply), `listAskAthenaConversations` once on mount to render the
-// recent-chats list, and `getAskAthenaConversation` whenever the active
-// conversation changes (on mount, for the most recent one; on switch).
-// ---------------------------------------------------------------------
-
-/** Must match `ask_athena_history::MAX_RETAINED_CONVERSATIONS` in `crates/athena-data/src/repositories/ask_athena_history.rs`. */
-export const MAX_RETAINED_ASK_ATHENA_CONVERSATIONS = 5;
-
-export interface AskAthenaMessageDto {
-  id: number;
-  conversation_id: string;
-  role: "user" | "athena";
+interface ChatMessage {
+  id: string;
+  role: ChatRole;
   text: string;
-  source: string | null;
-  confidence: string | null;
-  created_at: string;
+  source?: string;
+  confidence?: RecommendationDto['confidence'];
+  /** Set only on an 'athena' message that was a chat-capture confirmation card, not a real answer. */
+  draft?: ChatDeadlineDraftDto;
+  draftResolved?: 'added' | 'discarded';
 }
 
-export interface AskAthenaConversationDto {
-  conversation_id: string;
-  title: string;
-  last_message_at: string;
-  message_count: number;
+const STARTER_CHIPS = [
+  'What should I do tonight?',
+  "What's due this week?",
+  'Add a deadline',
+  'Explain my leverage classes.',
+];
+
+function newConversationId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export interface SaveAskAthenaMessageInput {
-  conversation_id: string;
-  role: "user" | "athena";
-  text: string;
-  source?: string | null;
-  confidence?: string | null;
+function localDateString(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-/** Persists one chat bubble (user turn or Athena reply) into its conversation. Also prunes down to the 5 most recently active conversations server-side. */
-export async function saveAskAthenaMessage(input: SaveAskAthenaMessageInput): Promise<AskAthenaMessageDto> {
-  return invoke<AskAthenaMessageDto>("save_ask_athena_message", { input });
+export default function AskAthena() {
+  const [conversations, setConversations] = useState<AskAthenaConversationDto[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [overwhelmed, setOverwhelmed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const convos = await listAskAthenaConversations();
+        if (cancelled) return;
+        setConversations(convos);
+        if (convos.length > 0) {
+          setConversationId(convos[0].conversation_id);
+          const rows = await getAskAthenaConversation(convos[0].conversation_id);
+          if (!cancelled) setMessages(rows.map(rowToChatMessage));
+        }
+      } catch {
+        // No conversations yet, or the backend isn't reachable — an
+        // empty starter-chip screen is the correct degraded state,
+        // not an error banner.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages]);
+
+  function rowToChatMessage(row: AskAthenaMessageDto): ChatMessage {
+    return {
+      id: String(row.id),
+      role: row.role,
+      text: row.text,
+      source: row.source ?? undefined,
+      confidence: (row.confidence as RecommendationDto['confidence']) ?? undefined,
+    };
+  }
+
+  async function startNewChat() {
+    setConversationId(newConversationId());
+    setMessages([]);
+    setError(null);
+    setOverwhelmed(false);
+  }
+
+  async function switchConversation(id: string) {
+    setConversationId(id);
+    setError(null);
+    try {
+      const rows = await getAskAthenaConversation(id);
+      setMessages(rows.map(rowToChatMessage));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function removeConversation(id: string) {
+    try {
+      await deleteAskAthenaConversation(id);
+      setConversations((prev) => prev.filter((c) => c.conversation_id !== id));
+      if (conversationId === id) {
+        setConversationId(null);
+        setMessages([]);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function sendMessage(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+
+    setError(null);
+    setInput('');
+    setSending(true);
+
+    const activeConversationId = conversationId ?? newConversationId();
+    if (!conversationId) setConversationId(activeConversationId);
+
+    const userMessage: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text: trimmed };
+    setMessages((prev) => [...prev, userMessage]);
+
+    try {
+      await saveAskAthenaMessage({ conversation_id: activeConversationId, role: 'user', text: trimmed });
+
+      // Part 3: chat-native deadline capture. Purely heuristic, zero
+      // network/AI dependency — check this before spending a provider
+      // call on what might just be a capture request.
+      const draft = await parseChatDeadlineDraft(trimmed, localDateString()).catch(() => null);
+      if (draft) {
+        const cardMessage: ChatMessage = {
+          id: `local-${Date.now()}-draft`,
+          role: 'athena',
+          text: "I found a deadline in that — check the details below before I add it.",
+          draft,
+        };
+        setMessages((prev) => [...prev, cardMessage]);
+        await saveAskAthenaMessage({
+          conversation_id: activeConversationId,
+          role: 'athena',
+          text: cardMessage.text,
+        });
+        setSending(false);
+        // Refresh the recent-chats list so a brand-new conversation shows up.
+        listAskAthenaConversations().then(setConversations).catch(() => {});
+        return;
+      }
+
+      const response = await askAthena(trimmed, activeConversationId, overwhelmed, []);
+      const athenaMessage: ChatMessage = {
+        id: `local-${Date.now()}-reply`,
+        role: 'athena',
+        text: response.reasoning,
+        source: response.source,
+        confidence: response.confidence,
+      };
+      setMessages((prev) => [...prev, athenaMessage]);
+      await saveAskAthenaMessage({
+        conversation_id: activeConversationId,
+        role: 'athena',
+        text: response.reasoning,
+        source: response.source,
+        confidence: response.confidence,
+      });
+      listAskAthenaConversations().then(setConversations).catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+      setOverwhelmed(false);
+    }
+  }
+
+  async function tryAgainSkipping(messageId: string, previousSource: string) {
+    // Find the user message immediately preceding this athena reply.
+    const idx = messages.findIndex((m) => m.id === messageId);
+    const priorUser = [...messages.slice(0, idx)].reverse().find((m) => m.role === 'user');
+    if (!priorUser || sending) return;
+
+    setSending(true);
+    setError(null);
+    try {
+      const response = await askAthena(priorUser.text, conversationId, false, [previousSource]);
+      const athenaMessage: ChatMessage = {
+        id: `local-${Date.now()}-retry`,
+        role: 'athena',
+        text: response.reasoning,
+        source: response.source,
+        confidence: response.confidence,
+      };
+      setMessages((prev) => [...prev, athenaMessage]);
+      if (conversationId) {
+        await saveAskAthenaMessage({
+          conversation_id: conversationId,
+          role: 'athena',
+          text: response.reasoning,
+          source: response.source,
+          confidence: response.confidence,
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function confirmDraft(messageId: string, edited: ChatDeadlineDraftDto) {
+    try {
+      await addDeadlinesToSemester([
+        {
+          course_id: null,
+          title: edited.title,
+          category: edited.category,
+          due_at: edited.due_at,
+          leverage_class: edited.leverage_class,
+          notes: null,
+        },
+      ]);
+      setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, draftResolved: 'added' } : m)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function discardDraft(messageId: string) {
+    setMessages((prev) => prev.map((m) => (m.id === messageId ? { ...m, draftResolved: 'discarded' } : m)));
+  }
+
+  function updateDraftField(messageId: string, field: keyof ChatDeadlineDraftDto, value: string) {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId && m.draft ? { ...m, draft: { ...m.draft, [field]: value } } : m)),
+    );
+  }
+
+  const isEmpty = messages.length === 0;
+
+  return (
+    <div className={styles.screen}>
+      <div className={styles.header}>
+        <h2 className="type-title">Ask Athena</h2>
+        <button type="button" className={styles.newChatButton} onClick={startNewChat} disabled={sending}>
+          <Plus size={16} aria-hidden="true" /> New chat
+        </button>
+      </div>
+
+      {conversations.length > 0 && (
+        <div className={styles.recentChats}>
+          {conversations.map((c) => (
+            <div key={c.conversation_id} className={styles.recentChatItem}>
+              <button
+                type="button"
+                className={styles.recentChatChip}
+                data-active={c.conversation_id === conversationId}
+                onClick={() => switchConversation(c.conversation_id)}
+                disabled={sending}
+                title={c.title}
+              >
+                {c.title}
+              </button>
+              <button
+                type="button"
+                className={styles.deleteChatButton}
+                onClick={() => removeConversation(c.conversation_id)}
+                disabled={sending}
+                aria-label={`Delete conversation: ${c.title}`}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className={styles.thread} ref={threadRef}>
+        {isEmpty ? (
+          <div className={styles.empty}>
+            <MessageCircle size={32} aria-hidden="true" />
+            <p className={`${styles.emptyTitle} type-body`}>Ask Athena anything.</p>
+            <p className={`${styles.emptyDescription} type-caption`}>
+              What's due, what to prioritize tonight, or just drop a deadline in — "add a deadline: essay due
+              friday 11:59pm" works right here in chat.
+            </p>
+            <div className={styles.chipsRow}>
+              {STARTER_CHIPS.map((chip) => (
+                <button key={chip} type="button" className={styles.chip} onClick={() => sendMessage(chip)}>
+                  {chip}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} className={styles.messageRow} data-role={m.role}>
+              {m.draft && !m.draftResolved ? (
+                <DraftCard
+                  draft={m.draft}
+                  onChange={(field, value) => updateDraftField(m.id, field, value)}
+                  onConfirm={() => confirmDraft(m.id, m.draft!)}
+                  onDiscard={() => discardDraft(m.id)}
+                />
+              ) : (
+                <div className={styles.bubble} data-role={m.role}>
+                  <p className={`${styles.bubbleText} type-body`}>
+                    {m.draftResolved === 'added'
+                      ? 'Added to your deadlines.'
+                      : m.draftResolved === 'discarded'
+                        ? 'Okay, not added.'
+                        : m.text}
+                  </p>
+                  {m.role === 'athena' && m.source && !m.draft && (
+                    <p className={`${styles.bubbleMeta} type-micro`}>
+                      {m.source === 'template' ? (
+                        <span className={styles.fallbackNote}>
+                          Athena's AI is unavailable right now — here's the plain data.
+                        </span>
+                      ) : (
+                        <>Answered by {m.source}</>
+                      )}
+                      {m.confidence && <ConfidenceBadge confidence={m.confidence} />}
+                    </p>
+                  )}
+                  {m.role === 'athena' && m.source && m.source !== 'template' && !m.draft && (
+                    <button
+                      type="button"
+                      className={styles.tryAgainButton}
+                      onClick={() => tryAgainSkipping(m.id, m.source!)}
+                      disabled={sending}
+                    >
+                      Try again (skip {m.source})
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+        {sending && (
+          <div className={styles.messageRow} data-role="athena">
+            <div className={styles.bubble} data-role="athena">
+              <p className={`${styles.thinking} type-body`}>Thinking…</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+
+      <div className={styles.composer}>
+        <button
+          type="button"
+          className={styles.overwhelmedToggle}
+          data-active={overwhelmed}
+          onClick={() => setOverwhelmed((v) => !v)}
+          title="Ask for one prioritized next action instead of a full answer"
+        >
+          Overwhelmed?
+        </button>
+        <input
+          className={styles.input}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage(input);
+            }
+          }}
+          placeholder="Ask Athena anything…"
+          disabled={sending}
+        />
+        <button
+          type="button"
+          className={styles.sendButton}
+          onClick={() => sendMessage(input)}
+          disabled={sending || !input.trim()}
+          aria-label="Send"
+        >
+          <Send size={18} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
-/** The most recently active conversations, most recent first — already capped at 5 by the backend. */
-export async function listAskAthenaConversations(): Promise<AskAthenaConversationDto[]> {
-  return invoke<AskAthenaConversationDto[]>("list_ask_athena_conversations");
+const CATEGORY_OPTIONS: DeadlineCategory[] = ['academic', 'career', 'research', 'dsa', 'other'];
+const LEVERAGE_OPTIONS: LeverageClass[] = ['high', 'medium', 'low'];
+
+interface DraftCardProps {
+  draft: ChatDeadlineDraftDto;
+  onChange: (field: keyof ChatDeadlineDraftDto, value: string) => void;
+  onConfirm: () => void;
+  onDiscard: () => void;
 }
 
-/** Every message in one conversation, oldest first. */
-export async function getAskAthenaConversation(conversationId: string): Promise<AskAthenaMessageDto[]> {
-  return invoke<AskAthenaMessageDto[]>("get_ask_athena_conversation", { conversationId });
-}
-
-export async function deleteAskAthenaConversation(conversationId: string): Promise<void> {
-  return invoke<void>("delete_ask_athena_conversation", { conversationId });
+/** Part 3's inline, editable confirmation card — pre-filled but never
+ * auto-committed. Every field can be corrected before "Add deadline"
+ * actually writes anything. */
+function DraftCard({ draft, onChange, onConfirm, onDiscard }: DraftCardProps) {
+  return (
+    <div className={styles.draftCard}>
+      <p className={`${styles.draftTitle} type-caption`}>Add this deadline?</p>
+      <div className={styles.draftFieldRow}>
+        <label className={styles.draftField}>
+          <span className="type-micro">Title</span>
+          <input
+            className={styles.draftInput}
+            value={draft.title}
+            onChange={(e) => onChange('title', e.target.value)}
+          />
+        </label>
+      </div>
+      <div className={styles.draftFieldRow}>
+        <label className={styles.draftField}>
+          <span className="type-micro">Due</span>
+          <input
+            className={styles.draftInput}
+            type="datetime-local"
+            value={draft.due_at.slice(0, 16)}
+            onChange={(e) => onChange('due_at', `${e.target.value}:00`)}
+          />
+        </label>
+        <label className={styles.draftField}>
+          <span className="type-micro">Category</span>
+          <select
+            className={styles.draftInput}
+            value={draft.category}
+            onChange={(e) => onChange('category', e.target.value)}
+          >
+            {CATEGORY_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className={styles.draftField}>
+          <span className="type-micro">Leverage</span>
+          <select
+            className={styles.draftInput}
+            value={draft.leverage_class}
+            onChange={(e) => onChange('leverage_class', e.target.value)}
+          >
+            {LEVERAGE_OPTIONS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className={styles.draftActions}>
+        <button type="button" className={styles.discardButton} onClick={onDiscard}>
+          Discard
+        </button>
+        <button type="button" className={styles.confirmButton} onClick={onConfirm}>
+          Add deadline
+        </button>
+      </div>
+    </div>
+  );
 }

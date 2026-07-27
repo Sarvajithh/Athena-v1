@@ -58,9 +58,44 @@ impl Synthesizer {
     /// attempt fails grounding. `question` is set only by the Reflection
     /// Engine (§4.7).
     pub fn synthesize(&self, payload: &EvidencePayload, question: Option<String>) -> Recommendation {
-        let request = PromptBuilder::build(payload, question);
+        self.synthesize_with_context(payload, question, None)
+    }
+
+    /// Same as `synthesize`, plus Ask Athena's Part 2 conversation
+    /// memory (`conversation_context`, see `PromptBuilder::build_with_context`
+    /// and `PromptRequest::conversation_context` for what it can/can't
+    /// affect). Every other capability calls `synthesize` and gets
+    /// `None` here.
+    pub fn synthesize_with_context(
+        &self,
+        payload: &EvidencePayload,
+        question: Option<String>,
+        conversation_context: Option<String>,
+    ) -> Recommendation {
+        self.synthesize_full(payload, question, conversation_context, &[])
+    }
+
+    /// Full form, adding Ask Athena's Part 4 "try again, skip that
+    /// provider" action: `skip_providers` names (matching
+    /// `LlmProvider::name`) are filtered out of the cascade for this one
+    /// call only — `build_providers()` in `commands::ai` is unchanged,
+    /// so a skipped provider is back in the cascade on the very next,
+    /// non-"try again" call. If skipping empties the cascade entirely,
+    /// this degrades to the template exactly like an empty
+    /// `Synthesizer::new(vec![])` would — never an error.
+    pub fn synthesize_full(
+        &self,
+        payload: &EvidencePayload,
+        question: Option<String>,
+        conversation_context: Option<String>,
+        skip_providers: &[String],
+    ) -> Recommendation {
+        let request = PromptBuilder::build_with_context(payload, question, conversation_context);
 
         for provider in &self.providers {
+            if skip_providers.iter().any(|s| s == provider.name()) {
+                continue;
+            }
             if let Some(rec) = self.try_provider(provider.as_ref(), payload, &request) {
                 return rec;
             }

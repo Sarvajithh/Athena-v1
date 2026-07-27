@@ -88,6 +88,7 @@ pub fn generate_daily_questions(
         evidence_json: serde_json::json!({ "context_summary": context_summary }).to_string(),
         output_schema: QUESTIONS_OUTPUT_SCHEMA.to_string(),
         question: None,
+        conversation_context: None,
         stricter: false,
     };
 
@@ -127,6 +128,7 @@ pub fn extract_daily_routine(
         evidence_json: serde_json::json!({ "transcript": transcript }).to_string(),
         output_schema: EXTRACT_OUTPUT_SCHEMA.to_string(),
         question: None,
+        conversation_context: None,
         stricter: false,
     };
 

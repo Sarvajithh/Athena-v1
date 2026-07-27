@@ -6,6 +6,8 @@
 //! there phrases a verdict `athena-domain` already computed, never
 //! computes one of its own.
 pub mod ai;
+pub mod ask_athena_capture;
+pub mod ask_athena_tools;
 pub mod bootstrap;
 pub mod deadlines;
 pub mod integrations;

@@ -632,6 +632,65 @@ pub fn list_notion_pages(conn: &Connection) -> Result<Vec<NotionPageRow>, DataEr
     Ok(rows)
 }
 
+// ---------------------------------------------------------------------
+// Google Calendar (V11 migration) — a fourth Google-backed connector,
+// same "stable entity upserted by its own provider ID" shape as
+// classroom_coursework/notion_pages above.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct NewCalendarEvent {
+    pub event_id: String,
+    pub title: String,
+    pub starts_at: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarEventRow {
+    pub event_id: String,
+    pub title: String,
+    pub starts_at: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub fetched_at: String,
+}
+
+fn row_to_calendar_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEventRow> {
+    Ok(CalendarEventRow {
+        event_id: row.get(0)?,
+        title: row.get(1)?,
+        starts_at: row.get(2)?,
+        location: row.get(3)?,
+        description: row.get(4)?,
+        fetched_at: row.get(5)?,
+    })
+}
+
+pub fn upsert_calendar_event(conn: &Connection, new: &NewCalendarEvent) -> Result<(), DataError> {
+    conn.execute(
+        "INSERT INTO calendar_events (event_id, title, starts_at, location, description, fetched_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+         ON CONFLICT(event_id) DO UPDATE SET \
+         title = excluded.title, starts_at = excluded.starts_at, location = excluded.location, \
+         description = excluded.description, fetched_at = excluded.fetched_at",
+        params![new.event_id, new.title, new.starts_at, new.location, new.description],
+    )?;
+    Ok(())
+}
+
+pub fn list_calendar_events(conn: &Connection) -> Result<Vec<CalendarEventRow>, DataError> {
+    let mut stmt = conn.prepare(
+        "SELECT event_id, title, starts_at, location, description, fetched_at \
+         FROM calendar_events ORDER BY starts_at",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_calendar_event)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +780,20 @@ mod tests {
         };
         upsert_notion_page(&conn, &new).unwrap();
         assert_eq!(list_notion_pages(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn calendar_events_upsert_by_event_id() {
+        let conn = open_db();
+        let new = NewCalendarEvent {
+            event_id: "event-1".into(),
+            title: "Essay due".into(),
+            starts_at: Some("2026-09-01T23:59:00Z".into()),
+            location: None,
+            description: None,
+        };
+        upsert_calendar_event(&conn, &new).unwrap();
+        upsert_calendar_event(&conn, &new).unwrap();
+        assert_eq!(list_calendar_events(&conn).unwrap().len(), 1);
     }
 }

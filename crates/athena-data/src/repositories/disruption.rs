@@ -138,6 +138,23 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<DisruptionRow>, DataErro
     .map_err(DataError::from)
 }
 
+/// Every disruption logged on or after `cutoff_date` (`YYYY-MM-DD`),
+/// most recent first — Ask Athena rebuild Part 1's
+/// `get_disruption_history(days)` tool. The caller (`commands::ai`)
+/// resolves `days` to a concrete cutoff date before calling in here,
+/// same "no date/time dependency of its own" convention every other
+/// repository in this crate follows (see `deadline::mark_overdue_as_missed`'s
+/// own doc comment).
+pub fn list_since(conn: &Connection, cutoff_date: &str) -> Result<Vec<DisruptionRow>, DataError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SELECT_COLUMNS} FROM schedule_disruptions WHERE date >= ?1 ORDER BY date DESC, logged_at DESC"
+    ))?;
+    let rows = stmt
+        .query_map(params![cutoff_date], row_to_disruption)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +201,45 @@ mod tests {
 
         let recent = list_recent(&conn, 10).unwrap();
         assert_eq!(recent.len(), 1);
+    }
+
+    #[test]
+    fn list_since_only_returns_rows_on_or_after_the_cutoff() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut conn = open_and_migrate(tmp.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let semester_id =
+            semester::create_semester(&tx, "Monsoon 2026", "2026-07-15", "2026-11-30").unwrap();
+        insert_disruption(
+            &tx,
+            &NewDisruption {
+                semester_id,
+                date: "2026-07-01".into(),
+                disruption_type: "illness".into(),
+                duration_minutes: 120,
+                affects_deep_work_window: true,
+                linked_deadline_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        insert_disruption(
+            &tx,
+            &NewDisruption {
+                semester_id,
+                date: "2026-07-20".into(),
+                disruption_type: "illness".into(),
+                duration_minutes: 60,
+                affects_deep_work_window: true,
+                linked_deadline_id: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let since = list_since(&conn, "2026-07-14").unwrap();
+        assert_eq!(since.len(), 1);
+        assert_eq!(since[0].date, "2026-07-20");
     }
 }

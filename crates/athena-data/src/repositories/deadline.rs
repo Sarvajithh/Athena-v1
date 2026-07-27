@@ -147,6 +147,72 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool, DataError> {
     Ok(affected > 0)
 }
 
+/// Normalizes text for fuzzy matching: lowercased, punctuation
+/// stripped to spaces, whitespace collapsed. Applied to both the
+/// stored `title` (via SQL `LOWER`/`REPLACE` is impractical for
+/// arbitrary punctuation, so normalization happens on the Rust side
+/// against every open row instead — this table is small enough per
+/// semester that an in-memory scan is simpler and faster to get right
+/// than a matching SQL expression) and the caller's query, so "that
+/// postcolonial paper!" matches a stored "Postcolonial Paper" title.
+fn normalize_for_search(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last_was_space = false;
+    for ch in text.to_lowercase().chars() {
+        if ch.is_alphanumeric() {
+            out.push(ch);
+            last_was_space = false;
+        } else if !last_was_space {
+            out.push(' ');
+            last_was_space = true;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Fuzzy, substring-based search over every open deadline's title —
+/// Ask Athena rebuild Part 1's `search_deadlines` tool. A messy student
+/// types "that essay thing" or "postcolonial paper," not the literal
+/// stored title, so this normalizes both sides (lowercase, punctuation
+/// stripped) and matches on substring containment rather than an exact
+/// or SQL `LIKE` match against raw text. Ranks whole-word-overlap
+/// matches above pure substring matches so "postcolonial paper"
+/// outranks a coincidental substring hit; caps at `limit` rows so a
+/// single vague query can't flood the evidence payload. See this
+/// module's doc comment (elevation note) for the FTS5/`strsim`
+/// upgrade path if this ever proves too literal in practice.
+pub fn search(conn: &Connection, query: &str, limit: i64) -> Result<Vec<DeadlineRow>, DataError> {
+    let normalized_query = normalize_for_search(query);
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query_words: std::collections::HashSet<&str> = normalized_query.split(' ').collect();
+
+    let all_open = list_open(conn)?;
+    let mut scored: Vec<(i64, DeadlineRow)> = all_open
+        .into_iter()
+        .filter_map(|row| {
+            let normalized_title = normalize_for_search(&row.title);
+            if !normalized_title.contains(&normalized_query) {
+                // Fall back to whole-word overlap for multi-word
+                // queries where the words are out of order or partial
+                // ("essay postcolonial" vs. "Postcolonial Essay").
+                let title_words: std::collections::HashSet<&str> = normalized_title.split(' ').collect();
+                let overlap = query_words.intersection(&title_words).count();
+                if overlap == 0 {
+                    return None;
+                }
+                return Some((overlap as i64, row));
+            }
+            // A direct substring hit outranks any word-overlap score.
+            Some((1000 + normalized_title.len() as i64 - normalized_query.len() as i64, row))
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(scored.into_iter().take(limit.max(0) as usize).map(|(_, row)| row).collect())
+}
+
 pub fn insert_deadlines(
     tx: &rusqlite::Transaction<'_>,
     semester_id: i64,
@@ -292,6 +358,49 @@ mod tests {
         // Idempotent: a second sweep finds nothing left to flip.
         let flipped_again = mark_overdue_as_missed(&conn).unwrap();
         assert!(flipped_again.is_empty());
+    }
+
+    #[test]
+    fn search_matches_a_vague_lowercase_punctuation_stripped_query() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut conn = open_and_migrate(tmp.path()).unwrap();
+        let tx = conn.transaction().unwrap();
+        let semester_id = semester::create_semester(&tx, "Monsoon 2026", "2026-07-15", "2026-11-30").unwrap();
+        insert_deadlines(
+            &tx,
+            semester_id,
+            &[
+                NewDeadline {
+                    course_id: None,
+                    title: "Postcolonial Literature Essay".into(),
+                    category: "academic".into(),
+                    due_at: "2026-08-10T23:59:00".into(),
+                    leverage_class: "high".into(),
+                    notes: None,
+                },
+                NewDeadline {
+                    course_id: None,
+                    title: "DSA practice log".into(),
+                    category: "dsa".into(),
+                    due_at: "2026-08-11T23:59:00".into(),
+                    leverage_class: "low".into(),
+                    notes: None,
+                },
+            ],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+
+        let results = search(&conn, "that essay thing", 5).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Postcolonial Literature Essay");
+
+        let results2 = search(&conn, "postcolonial paper!!", 5).unwrap();
+        assert_eq!(results2.len(), 1);
+        assert_eq!(results2[0].title, "Postcolonial Literature Essay");
+
+        let no_match = search(&conn, "quantum physics finals", 5).unwrap();
+        assert!(no_match.is_empty());
     }
 
     #[test]

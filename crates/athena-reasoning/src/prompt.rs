@@ -15,14 +15,24 @@ use crate::context::EvidencePayload;
 use crate::provider::PromptRequest;
 
 /// §8's tone constraint, verbatim, identical across every capability —
-/// no capability gets its own persona.
+/// no capability gets its own persona. Extended (Ask Athena rebuild,
+/// Part 4) with an explicit anti-guilt clause: this app is used by
+/// students who are already anxious about their workload, and a
+/// judgmental tone about lateness/procrastination actively works
+/// against the app's purpose. This applies everywhere, not just Ask
+/// Athena — "no capability gets its own persona" cuts both ways, a
+/// tone fix belongs in the one shared persona, not bolted onto one
+/// capability's prompt.
 const PERSONA: &str = "You are Athena's phrasing layer, not its decision layer. Every fact, ranking, \
     weakness, and confidence class below was already decided by deterministic code before you were \
     called. Your only job is to turn the verdict and evidence into one well-reasoned, well-formatted \
     piece of prose. Be direct and economical; respect the user's time. No performed enthusiasm, no \
     hedging a disagreement into mush, no moralizing, no nagging, and never soften a negative verdict \
-    for comfort. Never introduce a fact, number, or claim that is not present in the verdict or evidence \
-    JSON below — if you cannot support a sentence with an evidence ID, do not write that sentence.";
+    for comfort. Never characterize the user as behind, procrastinating, or failing, and never use \
+    guilt, urgency-shaming, or exclamation-point pep-talk energy — state what is true about deadlines \
+    and time plainly and let the user draw their own conclusions. Never introduce a fact, number, or \
+    claim that is not present in the verdict or evidence JSON below — if you cannot support a sentence \
+    with an evidence ID, do not write that sentence.";
 
 /// The fixed output shape every capability's Stage 4 response must
 /// satisfy (§7.4, §11): a restated verdict, grounded reasoning
@@ -47,6 +57,21 @@ pub struct PromptBuilder;
 
 impl PromptBuilder {
     pub fn build(payload: &EvidencePayload, question: Option<String>) -> PromptRequest {
+        Self::build_with_context(payload, question, None)
+    }
+
+    /// Same as `build`, plus Ask Athena's Part 2 conversation memory:
+    /// `conversation_context`, when present, is appended to the system
+    /// block as prior-turn context, never mixed into `evidence_json` —
+    /// it is not itself evidence and carries no IDs, so Stage 5's
+    /// grounding check is completely unaffected by it (a citation must
+    /// still resolve against `evidence_json` alone). Every other
+    /// capability calls `build` and gets `None` here, same as before.
+    pub fn build_with_context(
+        payload: &EvidencePayload,
+        question: Option<String>,
+        conversation_context: Option<String>,
+    ) -> PromptRequest {
         let verdict_json = serde_json::json!({
             "capability": payload.capability,
             "headline": payload.verdict_headline,
@@ -68,7 +93,7 @@ impl PromptBuilder {
         // generic template fallback. Spelling this out explicitly here
         // fixes it before the first attempt instead of relying on a retry
         // to catch it after the fact.
-        let system = if payload.evidence.is_empty() {
+        let mut system = if payload.evidence.is_empty() {
             format!(
                 "{PERSONA} There is no evidence for this request — the evidence JSON below is `[]`. \
                  You MUST return \"citations\": []. Do not invent, guess, or reuse an ID; any \
@@ -78,12 +103,22 @@ impl PromptBuilder {
             PERSONA.to_string()
         };
 
+        if let Some(context) = &conversation_context {
+            if !context.trim().is_empty() {
+                system.push_str(&format!(
+                    " Prior turns in this conversation, for context only (do not cite anything from \
+                     here — only IDs in the evidence JSON are citable):\n{context}"
+                ));
+            }
+        }
+
         PromptRequest {
             system,
             verdict_json,
             evidence_json,
             output_schema: OUTPUT_SCHEMA.to_string(),
             question,
+            conversation_context,
             stricter: false,
         }
     }

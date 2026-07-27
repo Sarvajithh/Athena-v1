@@ -223,3 +223,146 @@
   opacity: 0.5;
   cursor: default;
 }
+
+.chipsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: center;
+}
+
+.chip {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chip:hover:not(:disabled) {
+  background: var(--bg-surface-raised);
+  color: var(--text-primary);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.overwhelmedToggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.overwhelmedToggle[data-active='true'] {
+  background: var(--accent);
+  color: var(--accent-on);
+  border-color: var(--accent);
+}
+
+.fallbackNote {
+  margin: var(--space-1) 0 0;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.tryAgainButton {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--type-caption-size);
+  cursor: pointer;
+}
+
+.tryAgainButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.draftCard {
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--accent);
+  background: var(--bg-surface-raised);
+}
+
+.draftTitle {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.draftFieldRow {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.draftField {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 140px;
+}
+
+.draftField > span {
+  color: var(--text-tertiary);
+}
+
+.draftInput {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.draftActions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.confirmButton {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-control);
+  border: none;
+  background: var(--accent);
+  color: var(--accent-on);
+  font: inherit;
+  cursor: pointer;
+}
+
+.confirmButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.discardButton {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}

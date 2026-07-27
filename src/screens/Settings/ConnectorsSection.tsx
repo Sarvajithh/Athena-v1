@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import {
   deleteGithubToken,
   disconnectGmail,
+  disconnectGoogleCalendar,
   disconnectGoogleClassroom,
   disconnectNotion,
   getLatestCodeforcesSnapshot,
   getLatestLeetCodeSnapshot,
   linkGithubRepo,
+  listCalendarEvents,
   listClassroomAnnouncements,
   listClassroomCourses,
   listClassroomCoursework,
@@ -16,12 +18,14 @@ import {
   listNotionPages,
   saveGithubToken,
   startGmailOauth,
+  startGoogleCalendarOauth,
   startGoogleClassroomOauth,
   startNotionOauth,
   syncCodeforces,
   syncGithub,
   syncLeetCode,
   unlinkGithubRepo,
+  type CalendarEventDto,
   type ClassroomAnnouncementDto,
   type ClassroomCourseDto,
   type ClassroomCourseworkDto,
@@ -77,6 +81,7 @@ export function ConnectorsSection({ styles }: { styles: Record<string, string> }
         <GithubPanel styles={styles} source={findSource(sources, 'github')} onSynced={refreshSources} />
         <GmailPanel styles={styles} source={findSource(sources, 'gmail')} onSynced={refreshSources} />
         <ClassroomPanel styles={styles} source={findSource(sources, 'google_classroom')} onSynced={refreshSources} />
+        <CalendarPanel styles={styles} source={findSource(sources, 'google_calendar')} onSynced={refreshSources} />
         <NotionPanel styles={styles} source={findSource(sources, 'notion')} onSynced={refreshSources} />
       </div>
     </section>
@@ -530,6 +535,94 @@ function ClassroomPanel({
           {courses.length} course{courses.length === 1 ? '' : 's'}, {coursework.length} coursework item
           {coursework.length === 1 ? '' : 's'}, {announcements.length} announcement
           {announcements.length === 1 ? '' : 's'} synced.
+        </p>
+      )}
+      {source && (
+        <p className="type-caption">
+          <SyncStatusBadge status={source.status} />
+          {source.status === 'error' && source.last_error ? ` — ${source.last_error}` : ''}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Google Calendar — reuses the shared Google OAuth client/token
+// endpoint as Gmail/Classroom above (no separate app registration, no
+// separate redirect URI needed).
+// ---------------------------------------------------------------------
+
+function CalendarPanel({
+  styles,
+  source,
+  onSynced,
+}: {
+  styles: Record<string, string>;
+  source: DataSourceDto | undefined;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [events, setEvents] = useState<CalendarEventDto[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshEvents = () => listCalendarEvents().then(setEvents).catch(() => undefined);
+
+  useEffect(() => {
+    if (source?.status === 'ok') refreshEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.last_synced_at]);
+
+  const handleConnect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await startGoogleCalendarOauth();
+      onSynced();
+      await refreshEvents();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setBusy(true);
+    try {
+      await disconnectGoogleCalendar();
+      setEvents([]);
+      onSynced();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={styles.repeatRow}>
+      <p className="type-caption">
+        Opens your browser for Google Calendar consent, then syncs your primary calendar's upcoming events.
+      </p>
+      <div className={styles.fieldRow}>
+        <div className={styles.field}>
+          <span className="type-caption">&nbsp;</span>
+          <button type="button" className={styles.secondaryButton} onClick={handleConnect} disabled={busy}>
+            {busy ? 'Connecting…' : source?.has_credential ? 'Reconnect' : 'Connect Calendar'}
+          </button>
+        </div>
+        {source?.has_credential && (
+          <div className={styles.field}>
+            <span className="type-caption">&nbsp;</span>
+            <button type="button" className={styles.removeButton} onClick={handleDisconnect} disabled={busy}>
+              Disconnect
+            </button>
+          </div>
+        )}
+      </div>
+      {error && <p className={`${styles.error} type-caption`}>{error}</p>}
+      {events.length > 0 && (
+        <p className="type-caption">
+          {events.length} upcoming event{events.length === 1 ? '' : 's'} synced.
         </p>
       )}
       {source && (

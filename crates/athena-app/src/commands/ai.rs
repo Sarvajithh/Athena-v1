@@ -38,6 +38,7 @@ use athena_reasoning::{LlmProvider, Recommendation, Synthesizer};
 use rusqlite::Connection;
 use tauri::State;
 
+use crate::commands::{ask_athena_capture, ask_athena_tools};
 use crate::keychain;
 
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
@@ -324,24 +325,194 @@ pub fn has_gemini_api_key() -> Result<bool, String> {
 }
 
 // ---------------------------------------------------------------------
-// Ask Athena (new capability, additive — see
-// `athena_reasoning::capabilities::ask_athena`). Persistent, free-form
-// chat that needs neither a Verdict nor an open deadline to answer:
-// unlike every command above, this one calls no `athena_domain`
-// scoring function at all before reaching the synthesizer — the user's
-// message is the only input. Still goes through the identical
+// Ask Athena (rebuilt — see `athena_reasoning::capabilities::ask_athena`,
+// `commands::ask_athena_tools`, `commands::ask_athena_capture`).
+// Persistent, free-form chat that needs neither a Verdict nor an open
+// deadline to *be called* — but Part 1's tool dispatcher runs first and
+// gives it real evidence to ground on whenever the message matches one
+// of the five closed tool queries. Still goes through the identical
 // Synthesizer cascade/grounding/template-fallback pipeline as every
 // other capability; `build_synthesizer` is untouched.
 // ---------------------------------------------------------------------
 
+/// How many of the most recent turns (user + athena messages together)
+/// to send verbatim as conversation context (Part 2). 6 turns is the
+/// brief's own number; anything older than that is summarized instead
+/// of dropped (see `summarize_older_turns`).
+const RECENT_TURN_LIMIT: usize = 6;
+
+fn today_ymd() -> (i64, u32, u32) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    civil_from_days((now.as_secs() / 86_400) as i64)
+}
+
+/// Builds Part 2's conversation-context block: the last
+/// `RECENT_TURN_LIMIT` messages verbatim, plus — deliberately *not* an
+/// LLM-regenerated rolling summary of anything older. The brief asks
+/// for "a short rolling summary (1-2 sentences, regenerated every N
+/// turns)"; this uses a deterministic one-line heuristic summary
+/// (the conversation's opening question plus how many earlier turns
+/// were exchanged) instead. Reasoning: regenerating a summary via an
+/// LLM call would mean a second blocking provider round trip on top of
+/// the answer itself, on every single message once a conversation
+/// passes 6 turns — directly at odds with this persona's "flaky
+/// connection at 1am" requirement and with keeping chat capture/every
+/// other Ask Athena path usable offline. A deterministic summary line
+/// is honest about being non-AI-generated (it's just a fact: "N earlier
+/// turns, started with: ...") and never risks itself being an
+/// ungrounded claim about what was previously discussed.
+fn build_conversation_context(
+    messages: &[athena_data::repositories::ask_athena_history::AskAthenaMessageRow],
+) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+
+    let mut context = String::new();
+    if messages.len() > RECENT_TURN_LIMIT {
+        let older_count = messages.len() - RECENT_TURN_LIMIT;
+        if let Some(opening) = messages.iter().find(|m| m.role == "user") {
+            context.push_str(&format!(
+                "(Summary of {older_count} earlier turn(s) not shown verbatim: this conversation opened \
+                 with \"{}\".)\n",
+                opening.text
+            ));
+        }
+    }
+
+    let recent = &messages[messages.len().saturating_sub(RECENT_TURN_LIMIT)..];
+    for m in recent {
+        let speaker = if m.role == "user" { "Student" } else { "Athena" };
+        context.push_str(&format!("{speaker}: {}\n", m.text));
+    }
+
+    Some(context)
+}
+
+/// Runs Part 1's tool dispatcher against the message, collecting
+/// evidence from at most 2 tools, plus a short factual `evidence_note`
+/// describing what was (or wasn't) found — restated verbatim into the
+/// Ask Athena payload's `verdict_reasoning`, same as every other
+/// capability's Stage 2 reasoning.
+fn gather_ask_athena_evidence(
+    conn: &Connection,
+    message: &str,
+) -> (Vec<athena_reasoning::EvidenceItem>, String) {
+    let today = today_ymd();
+    let today_iso = format!("{:04}-{:02}-{:02}", today.0, today.1, today.2);
+    let tools = ask_athena_tools::classify(message);
+
+    let mut evidence = Vec::new();
+    let mut notes = Vec::new();
+    for tool in &tools {
+        match ask_athena_tools::execute(conn, tool, &today_iso) {
+            Ok(rows) => {
+                if !rows.is_empty() {
+                    notes.push(describe_tool_result(tool, rows.len()));
+                }
+                evidence.extend(rows);
+            }
+            Err(e) => {
+                tracing::debug!(event = "ask_athena_tool_failed", error = %e, "tool dispatch failed, continuing without it");
+            }
+        }
+    }
+
+    let note = if notes.is_empty() {
+        String::new()
+    } else {
+        notes.join(" ")
+    };
+    (evidence, note)
+}
+
+fn describe_tool_result(tool: &ask_athena_tools::AskAthenaTool, count: usize) -> String {
+    match tool {
+        ask_athena_tools::AskAthenaTool::GetCurrentVerdict => "Found today's current Now verdict.".to_string(),
+        ask_athena_tools::AskAthenaTool::ListOpenDeadlines { .. } => {
+            format!("Found {count} open deadline(s) in the requested window.")
+        }
+        ask_athena_tools::AskAthenaTool::SearchDeadlines { .. } => {
+            format!("Found {count} deadline(s) matching that description.")
+        }
+        ask_athena_tools::AskAthenaTool::GetCourse { .. } => "Found a matching course.".to_string(),
+        ask_athena_tools::AskAthenaTool::GetDisruptionHistory { .. } => {
+            format!("Found {count} logged disruption(s) in that window.")
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn ask_athena_command(message: String) -> Result<Recommendation, String> {
+pub async fn ask_athena_command(
+    db: State<'_, Mutex<Connection>>,
+    message: String,
+    conversation_id: Option<String>,
+    overwhelmed: Option<bool>,
+    skip_providers: Option<Vec<String>>,
+) -> Result<Recommendation, String> {
+    use athena_data::repositories::ask_athena_history;
+
+    let (evidence, evidence_note, conversation_context) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let (evidence, note) = gather_ask_athena_evidence(&conn, &message);
+        let context = match &conversation_id {
+            Some(id) => {
+                let history = ask_athena_history::list_messages_for_conversation(&conn, id).unwrap_or_default();
+                build_conversation_context(&history)
+            }
+            None => None,
+        };
+        (evidence, note, context)
+    };
+
+    let overwhelmed = overwhelmed.unwrap_or(false);
+    let skip_providers = skip_providers.unwrap_or_default();
+    let freshness_note = format!("as of {}", now_iso8601());
+
     tauri::async_runtime::spawn_blocking(move || {
         let synthesizer = build_synthesizer();
-        ask_athena::build_ask_athena_response(&synthesizer, message, format!("as of {}", now_iso8601()))
+        ask_athena::build_ask_athena_response(
+            &synthesizer,
+            message,
+            evidence,
+            evidence_note,
+            conversation_context,
+            overwhelmed,
+            &skip_providers,
+            freshness_note,
+        )
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Ask Athena rebuild, Part 3 — chat-native deadline capture. Pure
+/// heuristic parsing, no LLM/network dependency (see
+/// `commands::ask_athena_capture`'s doc comment for why that matters
+/// for this persona); returns `None` when the message doesn't look like
+/// a capture request or no date can be found in it, in which case the
+/// frontend just treats the message as a normal Ask Athena question.
+/// The actual insert is a separate, explicit step: the frontend calls
+/// the existing, unmodified `add_course_to_semester`/
+/// `add_deadlines_to_semester`-style commit only after the student
+/// edits and confirms the card this returns — never automatically.
+#[tauri::command]
+pub fn parse_chat_deadline_draft(
+    message: String,
+    local_date: Option<String>,
+) -> Result<Option<ask_athena_capture::ChatDeadlineDraft>, String> {
+    let today = match local_date {
+        Some(date) if date.len() >= 10 => {
+            let y: i64 = date[0..4].parse().map_err(|_| "invalid local_date".to_string())?;
+            let m: u32 = date[5..7].parse().map_err(|_| "invalid local_date".to_string())?;
+            let d: u32 = date[8..10].parse().map_err(|_| "invalid local_date".to_string())?;
+            (y, m, d)
+        }
+        _ => today_ymd(),
+    };
+    Ok(ask_athena_capture::parse_chat_deadline(&message, today))
 }
 
 // ---------------------------------------------------------------------

@@ -175,6 +175,7 @@ mod tests {
             evidence_json: r#"[{"id":7}]"#.into(),
             output_schema: r#"{"type":"object"}"#.into(),
             question:      None,
+            conversation_context: None,
             stricter:      false,
         };
         let msgs = HuggingFaceProvider::messages(&req).to_string();
@@ -191,6 +192,7 @@ mod tests {
             evidence_json: "[]".into(),
             output_schema: "{}".into(),
             question:      Some("why not Z?".into()),
+            conversation_context: None,
             stricter:      false,
         };
         let msgs = HuggingFaceProvider::messages(&req).to_string();

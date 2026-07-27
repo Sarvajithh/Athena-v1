@@ -192,6 +192,7 @@ mod tests {
             evidence_json: "[{\"id\":7}]".into(),
             output_schema: "{\"type\":\"object\"}".into(),
             question: None,
+            conversation_context: None,
             stricter: false,
         };
         let content = GeminiProvider::user_text(&request);
@@ -207,6 +208,7 @@ mod tests {
             evidence_json: "[]".into(),
             output_schema: "{}".into(),
             question: Some("why not the other one?".into()),
+            conversation_context: None,
             stricter: false,
         };
         let content = GeminiProvider::user_text(&request);

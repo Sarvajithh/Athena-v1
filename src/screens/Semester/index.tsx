@@ -4,6 +4,8 @@ import { DensityToggle } from '../../components/shared/DensityToggle';
 import {
   addCourseToSemester,
   commitSemesterSetup,
+  countCourseLinkedDeadlines,
+  deleteCourse,
   type CourseInput,
   type LeverageClass,
 } from '../../ipc/bindings';
@@ -76,6 +78,16 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
 
   const [activeTab, setActiveTab] = useState<SemesterTab>('overview');
 
+  // Course delete: a real confirm (not a snackbar-undo like deadline
+  // delete) since cascading to linked deadlines is a bigger, less
+  // reversible action — the student sees exactly how many deadlines
+  // will go with it before committing.
+  const [confirmingDeleteCourseId, setConfirmingDeleteCourseId] = useState<number | null>(null);
+  const [linkedDeadlineCount, setLinkedDeadlineCount] = useState<number | null>(null);
+  const [loadingLinkedCount, setLoadingLinkedCount] = useState(false);
+  const [deletingCourse, setDeletingCourse] = useState(false);
+  const [deleteCourseError, setDeleteCourseError] = useState<string | null>(null);
+
   const courses = state?.courses ?? [];
   const deadlines = state?.deadlines ?? [];
 
@@ -129,6 +141,43 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
       setCourseError(e instanceof Error ? e.message : String(e));
     } finally {
       setAddingCourse(false);
+    }
+  };
+
+  const startDeleteCourse = async (courseId: number) => {
+    setDeleteCourseError(null);
+    setConfirmingDeleteCourseId(courseId);
+    setLinkedDeadlineCount(null);
+    setLoadingLinkedCount(true);
+    try {
+      const count = await countCourseLinkedDeadlines(courseId);
+      setLinkedDeadlineCount(count);
+    } catch (e) {
+      setDeleteCourseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingLinkedCount(false);
+    }
+  };
+
+  const cancelDeleteCourse = () => {
+    setConfirmingDeleteCourseId(null);
+    setLinkedDeadlineCount(null);
+    setDeleteCourseError(null);
+  };
+
+  const confirmDeleteCourse = async () => {
+    if (confirmingDeleteCourseId == null || deletingCourse) return;
+    setDeletingCourse(true);
+    setDeleteCourseError(null);
+    try {
+      await deleteCourse(confirmingDeleteCourseId);
+      setConfirmingDeleteCourseId(null);
+      setLinkedDeadlineCount(null);
+      await refresh();
+    } catch (e) {
+      setDeleteCourseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeletingCourse(false);
     }
   };
 
@@ -305,13 +354,59 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
         {courses.length > 0 && (
           <div className={styles.list}>
             {courses.map((c) => (
-              <div key={c.id} className={styles.row}>
-                <div className={styles.rowMeta}>
-                  <span className={`${styles.rowTitle} type-body`}>
-                    {c.code} — {c.title}
-                  </span>
-                  <span className={`${styles.rowDetail} type-caption`}>{c.credits} credits</span>
+              <div key={c.id}>
+                <div className={styles.row}>
+                  <div className={styles.rowMeta}>
+                    <span className={`${styles.rowTitle} type-body`}>
+                      {c.code} — {c.title}
+                    </span>
+                    <span className={`${styles.rowDetail} type-caption`}>{c.credits} credits</span>
+                  </div>
+                  <button
+                    type="button"
+                    className={styles.dangerLink}
+                    onClick={() => startDeleteCourse(c.id)}
+                    disabled={confirmingDeleteCourseId === c.id}
+                  >
+                    Delete
+                  </button>
                 </div>
+
+                {confirmingDeleteCourseId === c.id && (
+                  <div className={styles.confirmRow}>
+                    {loadingLinkedCount ? (
+                      <p className="type-caption">Checking linked deadlines…</p>
+                    ) : (
+                      <p className="type-caption">
+                        Delete {c.code} — {c.title}?
+                        {linkedDeadlineCount != null && linkedDeadlineCount > 0
+                          ? ` This will also delete ${linkedDeadlineCount} linked deadline${
+                              linkedDeadlineCount === 1 ? '' : 's'
+                            }.`
+                          : ' No deadlines are linked to it.'}
+                      </p>
+                    )}
+                    {deleteCourseError && <p className={`${styles.error} type-caption`}>{deleteCourseError}</p>}
+                    <div className={styles.confirmActions}>
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        onClick={cancelDeleteCourse}
+                        disabled={deletingCourse}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.dangerLink}
+                        onClick={confirmDeleteCourse}
+                        disabled={deletingCourse || loadingLinkedCount}
+                      >
+                        {deletingCourse ? 'Deleting…' : 'Delete course'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

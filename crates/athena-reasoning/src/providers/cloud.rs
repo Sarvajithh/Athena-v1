@@ -131,6 +131,7 @@ mod tests {
             evidence_json: "[{\"id\":7}]".into(),
             output_schema: "{\"type\":\"object\"}".into(),
             question: None,
+            conversation_context: None,
             stricter: false,
         };
         let content = AnthropicProvider::user_content(&request);
@@ -146,6 +147,7 @@ mod tests {
             evidence_json: "[]".into(),
             output_schema: "{}".into(),
             question: Some("why not the other one?".into()),
+            conversation_context: None,
             stricter: false,
         };
         let content = AnthropicProvider::user_content(&request);
