@@ -87,6 +87,15 @@
   color: var(--severity-urgent);
 }
 
+.detailsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-left: 2px solid var(--border-subtle);
+  margin-left: var(--space-2);
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

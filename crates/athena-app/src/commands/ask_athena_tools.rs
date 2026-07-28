@@ -33,7 +33,7 @@
 //! the closed `AskAthenaTool` enum and `execute`'s dispatcher underneath
 //! it are unaffected either way.
 
-use athena_data::repositories::{course, deadline, disruption};
+use athena_data::repositories::{course, deadline, disruption, semester};
 use athena_domain::priority::{self, DeadlineCandidate};
 use athena_reasoning::EvidenceItem;
 use rusqlite::Connection;
@@ -56,8 +56,14 @@ pub enum AskAthenaTool {
     /// Fuzzy title search (`deadline::search`) — the tool a vague
     /// description ("that essay thing") resolves through.
     SearchDeadlines { query: String },
-    /// Fuzzy course code/name lookup (`course::find_fuzzy`).
+    /// Fuzzy course code/name lookup (`course::find_fuzzy`) — one
+    /// specific course.
     GetCourse { identifier: String },
+    /// Every course in the current semester (`course::list_by_semester`)
+    /// — for "how many courses," "what are my courses," "my course
+    /// load" style questions that don't name one specific course, so
+    /// `GetCourse`'s single-match lookup can't answer them.
+    ListCourses,
     /// Disruptions logged in the last `days` days.
     GetDisruptionHistory { days: i64 },
 }
@@ -88,6 +94,14 @@ pub fn classify(message: &str) -> Vec<AskAthenaTool> {
         .iter()
         .any(|kw| lower.contains(kw));
     let mentions_course = lower.contains("course") || lower.contains("class");
+    // "how many," "which," "my," "all," "list," or "load" alongside
+    // "course(s)" reads as a question about the whole set, not one
+    // specific course — GetCourse's fuzzy match can't answer "how many
+    // courses do I have," there's no single code/title to match against.
+    let asks_about_whole_load = mentions_course
+        && ["how many", "which course", "my courses", "all my course", "list my course", "course load", "what courses"]
+            .iter()
+            .any(|kw| lower.contains(kw));
 
     if asks_what_to_do || asks_am_i_behind {
         tools.push(AskAthenaTool::GetCurrentVerdict);
@@ -111,13 +125,17 @@ pub fn classify(message: &str) -> Vec<AskAthenaTool> {
     }
 
     if mentions_course && tools.len() < 2 {
-        // The identifier is the whole message; `course::find_fuzzy`
-        // does its own normalization/word-overlap matching, so passing
-        // the raw sentence ("how am I doing in CS5590") still resolves
-        // against the code/title inside it.
-        tools.push(AskAthenaTool::GetCourse {
-            identifier: message.to_string(),
-        });
+        if asks_about_whole_load {
+            tools.push(AskAthenaTool::ListCourses);
+        } else {
+            // The identifier is the whole message; `course::find_fuzzy`
+            // does its own normalization/word-overlap matching, so
+            // passing the raw sentence ("how am I doing in CS5590")
+            // still resolves against the code/title inside it.
+            tools.push(AskAthenaTool::GetCourse {
+                identifier: message.to_string(),
+            });
+        }
     }
 
     // Fallback slot: a vague, non-keyword-matching message still gets
@@ -203,15 +221,55 @@ pub fn execute(conn: &Connection, tool: &AskAthenaTool, today_iso: &str) -> Resu
                 })
                 .collect())
         }
+        AskAthenaTool::ListCourses => {
+            let semester = semester::get_current_semester(conn).map_err(|e| e.to_string())?;
+            let Some(semester) = semester else {
+                return Ok(vec![]);
+            };
+            let courses = course::list_by_semester(conn, semester.id).map_err(|e| e.to_string())?;
+            Ok(courses
+                .into_iter()
+                .map(|c| EvidenceItem {
+                    id: c.id,
+                    label: "course".to_string(),
+                    value: format!(
+                        "{} — {} ({} credits, {} leverage)",
+                        c.code, c.title, c.credits, c.leverage_class
+                    ),
+                })
+                .collect())
+        }
         AskAthenaTool::GetCourse { identifier } => {
             let found = course::find_fuzzy(conn, identifier).map_err(|e| e.to_string())?;
             Ok(found
                 .map(|c| {
+                    // "Course Context" (V12): fold notes + grading
+                    // breakdown into the same evidence value string
+                    // rather than separate EvidenceItems — one course
+                    // lookup should read as one fact to the model, same
+                    // as every other capability's evidence rows.
+                    let grading = if c.grading_breakdown.is_empty() {
+                        String::new()
+                    } else {
+                        let parts: Vec<String> = c
+                            .grading_breakdown
+                            .iter()
+                            .map(|g| format!("{} {}%", g.category, g.weight))
+                            .collect();
+                        format!("; grading: {}", parts.join(", "))
+                    };
+                    let notes = c
+                        .notes
+                        .as_ref()
+                        .filter(|n| !n.trim().is_empty())
+                        .map(|n| format!("; notes: {n}"))
+                        .unwrap_or_default();
+
                     vec![EvidenceItem {
                         id: c.id,
                         label: "course".to_string(),
                         value: format!(
-                            "{} — {} ({} credits, {} leverage{})",
+                            "{} — {} ({} credits, {} leverage{}){}{}",
                             c.code,
                             c.title,
                             c.credits,
@@ -219,7 +277,9 @@ pub fn execute(conn: &Connection, tool: &AskAthenaTool, today_iso: &str) -> Resu
                             c.target_grade
                                 .as_ref()
                                 .map(|g| format!(", target grade {g}"))
-                                .unwrap_or_default()
+                                .unwrap_or_default(),
+                            notes,
+                            grading,
                         ),
                     }]
                 })
@@ -318,6 +378,38 @@ mod tests {
     fn classify_never_returns_more_than_two_tools() {
         let tools = classify("am I behind on my course deadlines, any disruptions this week?");
         assert!(tools.len() <= 2);
+    }
+
+    #[test]
+    fn how_many_courses_routes_to_list_courses_not_get_course() {
+        // Regression test: "how many courses do I have" used to hit
+        // GetCourse's single-code/title fuzzy match with the whole
+        // sentence as the identifier, which never matches anything,
+        // always returning empty evidence — hence "I do not have
+        // access to your current course load information." Asserting
+        // membership, not exact equality: classify() always tries to
+        // fill up to 2 tool slots (see its fallback-search comment), so
+        // a SearchDeadlines fallback alongside ListCourses is expected,
+        // not a bug — the thing this test actually guards is that
+        // GetCourse (the broken path) never fires here.
+        let tools = classify("How many courses do I have currently in this sem?");
+        assert!(tools.contains(&AskAthenaTool::ListCourses));
+        assert!(!tools.iter().any(|t| matches!(t, AskAthenaTool::GetCourse { .. })));
+    }
+
+    #[test]
+    fn naming_a_specific_course_still_routes_to_get_course() {
+        // "course" must actually appear in the message for
+        // `mentions_course` to fire at all — a bare course code alone
+        // ("CS5590") doesn't trigger it, by design (see `classify`'s
+        // keyword list); that's a real, separate limitation, not what
+        // this test checks. This test only guards that naming a course
+        // *and* saying "course" doesn't get misrouted to ListCourses.
+        let tools = classify("how am I doing in my CS5590 course?");
+        assert!(tools.contains(&AskAthenaTool::GetCourse {
+            identifier: "how am I doing in my CS5590 course?".to_string()
+        }));
+        assert!(!tools.contains(&AskAthenaTool::ListCourses));
     }
 
     #[test]

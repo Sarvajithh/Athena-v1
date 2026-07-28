@@ -14,9 +14,11 @@ import {
   listClassroomCoursework,
   listDataSources,
   listGmailMessages,
+  listGoogleCalendars,
   listLinkedGithubRepos,
   listNotionPages,
   saveGithubToken,
+  setGoogleCalendarIds,
   startGmailOauth,
   startGoogleCalendarOauth,
   startGoogleClassroomOauth,
@@ -26,6 +28,7 @@ import {
   syncLeetCode,
   unlinkGithubRepo,
   type CalendarEventDto,
+  type CalendarListEntryDto,
   type ClassroomAnnouncementDto,
   type ClassroomCourseDto,
   type ClassroomCourseworkDto,
@@ -565,13 +568,32 @@ function CalendarPanel({
   const [busy, setBusy] = useState(false);
   const [events, setEvents] = useState<CalendarEventDto[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [calendars, setCalendars] = useState<CalendarListEntryDto[]>([]);
+  const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
+  const [switchingCalendars, setSwitchingCalendars] = useState(false);
 
   const refreshEvents = () => listCalendarEvents().then(setEvents).catch(() => undefined);
 
+  const refreshCalendarList = async () => {
+    try {
+      const list = await listGoogleCalendars();
+      setCalendars(list);
+      setSelectedCalendarIds((current) => {
+        if (current.length > 0) return current;
+        const primary = list.find((c) => c.primary);
+        return primary ? [primary.id] : [];
+      });
+    } catch {
+      // Not connected yet, or the fetch failed — leave the picker
+      // empty; the "Connect Calendar" flow surfaces its own error.
+    }
+  };
+
   useEffect(() => {
     if (source?.status === 'ok') refreshEvents();
+    if (source?.has_credential) void refreshCalendarList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source?.last_synced_at]);
+  }, [source?.last_synced_at, source?.has_credential]);
 
   const handleConnect = async () => {
     setBusy(true);
@@ -580,6 +602,7 @@ function CalendarPanel({
       await startGoogleCalendarOauth();
       onSynced();
       await refreshEvents();
+      await refreshCalendarList();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -592,16 +615,41 @@ function CalendarPanel({
     try {
       await disconnectGoogleCalendar();
       setEvents([]);
+      setCalendars([]);
+      setSelectedCalendarIds([]);
       onSynced();
     } finally {
       setBusy(false);
     }
   };
 
+  const applyCalendarSelection = async (nextIds: string[]) => {
+    setSelectedCalendarIds(nextIds);
+    if (nextIds.length === 0) return; // nothing to sync yet — wait for at least one checked
+    setSwitchingCalendars(true);
+    setError(null);
+    try {
+      await setGoogleCalendarIds(nextIds);
+      onSynced();
+      await refreshEvents();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSwitchingCalendars(false);
+    }
+  };
+
+  const toggleCalendar = (calendarId: string, checked: boolean) => {
+    const next = checked
+      ? [...selectedCalendarIds, calendarId]
+      : selectedCalendarIds.filter((id) => id !== calendarId);
+    void applyCalendarSelection(next);
+  };
+
   return (
     <div className={styles.repeatRow}>
       <p className="type-caption">
-        Opens your browser for Google Calendar consent, then syncs your primary calendar's upcoming events.
+        Opens your browser for Google Calendar consent, then syncs the calendar you pick below.
       </p>
       <div className={styles.fieldRow}>
         <div className={styles.field}>
@@ -619,6 +667,31 @@ function CalendarPanel({
           </div>
         )}
       </div>
+      {source?.has_credential && calendars.length > 0 && (
+        <div className={styles.field}>
+          <span className="type-caption">
+            Which calendar(s) should Athena read? (pick as many as you need — primary and subscribed
+            calendars are separate)
+          </span>
+          {calendars.map((c) => (
+            <label key={c.id} className={styles.fieldRow} style={{ alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={selectedCalendarIds.includes(c.id)}
+                disabled={switchingCalendars}
+                onChange={(e) => toggleCalendar(c.id, e.target.checked)}
+              />
+              <span className="type-caption">
+                {c.summary}
+                {c.primary ? ' (primary)' : ''}
+              </span>
+            </label>
+          ))}
+          {selectedCalendarIds.length === 0 && (
+            <p className={`type-caption ${styles.error}`}>Pick at least one calendar to sync.</p>
+          )}
+        </div>
+      )}
       {error && <p className={`${styles.error} type-caption`}>{error}</p>}
       {events.length > 0 && (
         <p className="type-caption">

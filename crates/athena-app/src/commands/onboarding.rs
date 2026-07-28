@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use athena_data::repositories::course::{MeetingSlot, NewCourse};
+use athena_data::repositories::course::{GradingComponent, MeetingSlot, NewCourse};
 use athena_data::repositories::deadline::NewDeadline;
 use athena_data::repositories::disruption::NewDisruption;
 use athena_data::repositories::profile::NewProfile;
@@ -79,6 +79,21 @@ pub struct CourseInput {
     pub instructor: Option<String>,
     pub target_grade: Option<String>,
     pub meeting_pattern: Vec<MeetingSlotInput>,
+    /// "Course Context" (V12): optional notes, extracted syllabus text,
+    /// and a grading breakdown the frontend has already validated sums
+    /// to 100 (`CourseEntryStep.tsx`) — nothing here re-validates that.
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub syllabus_text: Option<String>,
+    #[serde(default)]
+    pub grading_breakdown: Vec<GradingComponentInput>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GradingComponentInput {
+    pub category: String,
+    pub weight: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +167,16 @@ pub fn commit_semester_setup(
                     end: m.end.clone(),
                 })
                 .collect(),
+            notes: c.notes.clone(),
+            syllabus_text: c.syllabus_text.clone(),
+            grading_breakdown: c
+                .grading_breakdown
+                .iter()
+                .map(|g| GradingComponent {
+                    category: g.category.clone(),
+                    weight: g.weight,
+                })
+                .collect(),
         })
         .collect();
     let course_ids = course::insert_courses(&tx, semester_id, &new_courses).map_err(|e| e.to_string())?;
@@ -216,6 +241,16 @@ pub fn add_course_to_semester(db: State<'_, Mutex<Connection>>, input: CourseInp
                 day: m.day,
                 start: m.start,
                 end: m.end,
+            })
+            .collect(),
+        notes: input.notes,
+        syllabus_text: input.syllabus_text,
+        grading_breakdown: input
+            .grading_breakdown
+            .into_iter()
+            .map(|g| GradingComponent {
+                category: g.category,
+                weight: g.weight,
             })
             .collect(),
     };
@@ -363,6 +398,9 @@ pub fn seed_sample_data(db: State<'_, Mutex<Connection>>) -> Result<i64, String>
                 start: "09:00".to_string(),
                 end: "10:30".to_string(),
             }],
+            notes: None,
+            syllabus_text: None,
+            grading_breakdown: vec![],
         },
         NewCourse {
             code: "CS3100".to_string(),
@@ -376,6 +414,9 @@ pub fn seed_sample_data(db: State<'_, Mutex<Connection>>) -> Result<i64, String>
                 start: "11:00".to_string(),
                 end: "12:30".to_string(),
             }],
+            notes: None,
+            syllabus_text: None,
+            grading_breakdown: vec![],
         },
         NewCourse {
             code: "HS2010".to_string(),
@@ -385,6 +426,9 @@ pub fn seed_sample_data(db: State<'_, Mutex<Connection>>) -> Result<i64, String>
             instructor: None,
             target_grade: None,
             meeting_pattern: vec![],
+            notes: None,
+            syllabus_text: None,
+            grading_breakdown: vec![],
         },
     ];
     let course_ids = course::insert_courses(&tx, semester_id, &new_courses).map_err(|e| e.to_string())?;
@@ -479,4 +523,30 @@ pub fn seed_sample_data(db: State<'_, Mutex<Connection>>) -> Result<i64, String>
     tx.commit().map_err(|e| e.to_string())?;
 
     Ok(semester_id)
+}
+
+/// "Course Context" (Semester Setup reshape): extracts plain text from
+/// an uploaded syllabus PDF, given as base64 (Tauri IPC has no native
+/// binary/File transfer — same base64-over-IPC pattern this app has no
+/// existing precedent for, so this is the first command to need it;
+/// kept narrow — decode + extract, no storage side effect of its own —
+/// so the frontend can preview/edit the extracted text before it's
+/// included in `CourseInput.syllabus_text` at commit time, same
+/// "extraction always ends in a review step, never auto-commits" rule
+/// `PullDeadlinesPanel`/`ImportStep` already follow. Returns an empty
+/// string (not an error) for a PDF `pdf_extract` can't parse (e.g.
+/// scanned/image-only pages with no text layer) — a syllabus upload
+/// failing to yield text isn't a failed course entry, just an empty
+/// optional field the person can still type notes into by hand.
+#[tauri::command]
+pub fn extract_syllabus_text(base64_pdf: String) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_pdf.trim())
+        .map_err(|e| format!("couldn't decode uploaded file: {e}"))?;
+
+    match pdf_extract::extract_text_from_mem(&bytes) {
+        Ok(text) => Ok(text),
+        Err(_) => Ok(String::new()),
+    }
 }

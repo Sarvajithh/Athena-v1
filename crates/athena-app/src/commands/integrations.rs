@@ -867,7 +867,7 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
             }
         }
 
-        Err(e) => {
+        Err(_e) => {
             // existing error handling
         }
     }
@@ -980,6 +980,55 @@ pub fn disconnect_google_calendar(db: State<'_, Mutex<Connection>>) -> Result<()
     disconnect_oauth_source(&db, "google_calendar")
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CalendarListEntryDto {
+    pub id: String,
+    pub summary: String,
+    pub primary: bool,
+}
+
+/// Lists every calendar the connected token can see, for the "which
+/// calendar should Athena read?" picker (`ConnectorsSection.tsx`'s
+/// Calendar panel) — called once right after connecting, not on every
+/// sync (`run_google_calendar_sync` never calls this).
+#[tauri::command]
+pub async fn list_google_calendars() -> Result<Vec<CalendarListEntryDto>, String> {
+    let Some(access_token) = get_stored_access_token("google_calendar")? else {
+        return Err("Google Calendar isn't connected yet — connect it first.".to_string());
+    };
+    let entries = google_calendar::list_calendars(&access_token)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|e| CalendarListEntryDto {
+            id: e.id,
+            summary: e.summary,
+            primary: e.primary,
+        })
+        .collect())
+}
+
+/// Saves which calendar(s) to read (stored in `data_sources.config_json`
+/// as `{"calendar_ids": [...]}` — no schema migration needed, that
+/// column already exists and already has exactly this "small
+/// per-connector settings blob" purpose). Plural, not singular — a
+/// person's real deadlines are commonly spread across their primary
+/// calendar *and* calendars they've subscribed to, and a single-select
+/// picker (this command's first version) couldn't cover that at all.
+/// Re-syncs immediately so switching selection shows results right away
+/// instead of waiting for the next scheduled tick.
+#[tauri::command]
+pub async fn set_google_calendar_ids(db: State<'_, Mutex<Connection>>, calendar_ids: Vec<String>) -> Result<DataSourceDto, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let config = serde_json::json!({ "calendar_ids": calendar_ids }).to_string();
+        integrations_repo::set_data_source_config(&conn, "google_calendar", &config).map_err(|e| e.to_string())?;
+        integrations_repo::clear_calendar_events(&conn).map_err(|e| e.to_string())?;
+    }
+    run_google_calendar_sync(&db).await
+}
+
 /// See `run_codeforces_sync`'s doc comment — same reasoning, for the
 /// scheduler's Calendar tick and `start_google_calendar_oauth`'s
 /// immediate first sync.
@@ -1003,36 +1052,86 @@ pub async fn run_google_calendar_sync(db: &Mutex<Connection>) -> Result<DataSour
         return Ok(to_dto(row));
     };
 
-    let mut events_result = google_calendar::fetch_events(&access_token).await;
-    if let Err(IngestionError::AuthExpired(_)) = &events_result {
-        access_token = refresh_oauth_token("google_calendar").await?;
-        events_result = google_calendar::fetch_events(&access_token).await;
+    // "calendar_ids": [...] (plural — multi-select fix; a person's
+    // real deadlines are commonly spread across their primary calendar
+    // *and* subscribed/shared calendars, not just one). Falls back to
+    // the old singular "calendar_id" key too, so anyone who picked one
+    // calendar before this change keeps working without re-picking.
+    let calendar_ids: Vec<String> = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let config = integrations_repo::get_data_source(&conn, "google_calendar")
+            .map_err(|e| e.to_string())?
+            .and_then(|row| row.config_json)
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+
+        config
+            .as_ref()
+            .and_then(|v| v.get("calendar_ids"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|id| id.as_str().map(str::to_string)).collect::<Vec<_>>())
+            .filter(|ids| !ids.is_empty())
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|v| v.get("calendar_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|id| vec![id.to_string()])
+            })
+            .unwrap_or_else(|| vec!["primary".to_string()])
+    };
+
+    // One event_id can legitimately appear on more than one calendar
+    // (e.g. an event you're invited to also shows on a shared
+    // calendar) — dedupe by event_id across every calendar fetched
+    // this sync, same key `upsert_calendar_event` already dedupes on
+    // at the DB layer, just applied before insert instead of relying
+    // on ON CONFLICT to quietly absorb the duplicate.
+    let mut all_events: Vec<google_calendar::CalendarEvent> = Vec::new();
+    let mut seen_event_ids = std::collections::HashSet::new();
+    let mut last_error: Option<String> = None;
+
+    for calendar_id in &calendar_ids {
+        let mut result = google_calendar::fetch_events(&access_token, calendar_id).await;
+        if let Err(IngestionError::AuthExpired(_)) = &result {
+            access_token = refresh_oauth_token("google_calendar").await?;
+            result = google_calendar::fetch_events(&access_token, calendar_id).await;
+        }
+        match result {
+            Ok(events) => {
+                for event in events {
+                    if seen_event_ids.insert(event.event_id.clone()) {
+                        all_events.push(event);
+                    }
+                }
+            }
+            // One bad calendar (revoked access, deleted, etc.) shouldn't
+            // sink every other calendar's events for this sync — collect
+            // the error to report, keep going.
+            Err(e) => last_error = Some(format!("{calendar_id}: {e}")),
+        }
     }
 
-    match events_result {
-        Ok(events) => {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            for event in events {
-                integrations_repo::upsert_calendar_event(
-                    &conn,
-                    &integrations_repo::NewCalendarEvent {
-                        event_id: event.event_id,
-                        title: event.title,
-                        starts_at: event.starts_at,
-                        location: event.location,
-                        description: event.description,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-            }
-            integrations_repo::mark_synced_ok(&conn, "google_calendar", &now_iso8601())
-                .map_err(|e| e.to_string())?;
+    if all_events.is_empty() && last_error.is_some() {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(&conn, "google_calendar", &last_error.unwrap())
+            .map_err(|e| e.to_string())?;
+    } else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        for event in all_events {
+            integrations_repo::upsert_calendar_event(
+                &conn,
+                &integrations_repo::NewCalendarEvent {
+                    event_id: event.event_id,
+                    title: event.title,
+                    starts_at: event.starts_at,
+                    location: event.location,
+                    description: event.description,
+                },
+            )
+            .map_err(|e| e.to_string())?;
         }
-        Err(e) => {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            integrations_repo::mark_synced_error(&conn, "google_calendar", &e.to_string())
-                .map_err(|e| e.to_string())?;
-        }
+        integrations_repo::mark_synced_ok(&conn, "google_calendar", &now_iso8601())
+            .map_err(|e| e.to_string())?;
     }
 
     let conn = db.lock().map_err(|e| e.to_string())?;

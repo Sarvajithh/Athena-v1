@@ -30,9 +30,6 @@ use athena_data::repositories::{deadline, disruption, profile};
 use athena_domain::planner::{self, DisruptionType, ScheduleDisruption};
 use athena_domain::priority::{self, DeadlineCandidate};
 use athena_reasoning::capabilities::{ask_athena, daily_briefing, routine_conversation, weakness_analysis, weekly_planning};
-use athena_reasoning::providers::cloud::AnthropicProvider;
-use athena_reasoning::providers::gemini::GeminiProvider;
-use athena_reasoning::providers::hf::HuggingFaceProvider;
 use athena_reasoning::providers::local::OllamaProvider;
 use athena_reasoning::{LlmProvider, Recommendation, Synthesizer};
 use rusqlite::Connection;
@@ -41,12 +38,14 @@ use tauri::State;
 use crate::commands::{ask_athena_capture, ask_athena_tools};
 use crate::keychain;
 
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-6";
-// Best free-tier model for JSON instruction-following as of 2026-07.
-// Swap to "meta-llama/Llama-3.3-70B-Instruct" or
-// "mistralai/Mistral-7B-Instruct-v0.3" for a faster/lighter option.
-const DEFAULT_HF_MODEL: &str = "Qwen/Qwen2.5-7B-Instruct";
-const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+// Anthropic/Gemini/Hugging Face removed from the cascade at the user's
+// explicit request — Ollama only, no cloud fallback, no confusion
+// about which provider actually answered a given message. Their
+// keychain storage functions and provider structs still exist in
+// `athena_reasoning::providers` / `crate::keychain` (Settings still
+// lets someone save those keys for potential future use), they're
+// simply never read here, so `build_providers()` never adds them to
+// the cascade regardless of what's saved.
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 // Pinned to whatever model the user has actually pulled via `ollama pull`
 // — Ollama has no built-in model, so this must match the tag exactly
@@ -94,54 +93,20 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// capabilities) and `routine_conversation`'s two commands (which call
 /// `LlmProvider` directly, bypassing `Synthesizer` — see that module's doc
 /// comment) — both need the identical, identically-ordered provider list.
+/// Ollama-only cascade (user's explicit request — no cloud fallback,
+/// no ambiguity about which provider answered). A single-element
+/// cascade rather than a special-cased "no cascade" path: everything
+/// downstream (`Synthesizer::synthesize_full`'s retry/skip_providers
+/// logic, the template fallback when unreachable) already handles a
+/// cascade of any length, including one, so there's no reason for this
+/// function to be anything other than "build the list `Synthesizer`
+/// expects," same as it was with four providers.
 fn build_providers() -> Vec<Box<dyn LlmProvider>> {
-    let mut providers: Vec<Box<dyn LlmProvider>> = Vec::new();
-
-    // 1. Anthropic Claude — paid, cloud, fastest
-    match keychain::get_anthropic_api_key() {
-        Ok(Some(api_key)) => {
-            tracing::debug!(event = "cascade_step", provider = "anthropic", "key found, adding to cascade");
-            providers.push(Box::new(AnthropicProvider::new(
-                api_key,
-                DEFAULT_ANTHROPIC_MODEL.to_string(),
-            )));
-        }
-        Ok(None) => tracing::debug!(event = "cascade_step", provider = "anthropic", "no key saved, skipping"),
-        Err(e) => tracing::debug!(event = "cascade_step", provider = "anthropic", error = %e, "key lookup failed, skipping"),
-    }
-
-    // 2. Google Gemini — free tier, cloud, no billing required
-    match keychain::get_gemini_api_key() {
-        Ok(Some(api_key)) => {
-            tracing::debug!(event = "cascade_step", provider = "gemini", "key found, adding to cascade");
-            providers.push(Box::new(GeminiProvider::new(
-                api_key,
-                DEFAULT_GEMINI_MODEL.to_string(),
-            )));
-        }
-        Ok(None) => tracing::debug!(event = "cascade_step", provider = "gemini", "no key saved, skipping"),
-        Err(e) => tracing::debug!(event = "cascade_step", provider = "gemini", error = %e, "key lookup failed, skipping"),
-    }
-
-    // 3. Hugging Face — free tier, cloud, no billing required
-    match keychain::get_hf_api_token() {
-        Ok(Some(token)) => {
-            tracing::debug!(event = "cascade_step", provider = "huggingface", "token found, adding to cascade");
-            providers.push(Box::new(HuggingFaceProvider::new(
-                token,
-                DEFAULT_HF_MODEL.to_string(),
-            )));
-        }
-        Ok(None) => tracing::debug!(event = "cascade_step", provider = "huggingface", "no token saved, skipping"),
-        Err(e) => tracing::debug!(event = "cascade_step", provider = "huggingface", error = %e, "token lookup failed, skipping"),
-    }
-
-    // 4. Ollama — local, always in the list; ProviderUnavailable if not running
-    tracing::debug!(event = "cascade_step", provider = "ollama", "always added, local fallback");
-    providers.push(Box::new(OllamaProvider::new(
+    tracing::debug!(event = "cascade_step", provider = "ollama", "ollama-only cascade, no cloud fallback");
+    let providers: Vec<Box<dyn LlmProvider>> = vec![Box::new(OllamaProvider::new(
         DEFAULT_OLLAMA_BASE_URL.to_string(),
         DEFAULT_OLLAMA_MODEL.to_string(),
-    )));
+    ))];
 
     tracing::debug!(event = "cascade_built", provider_count = providers.len(), "provider cascade built");
     providers
@@ -438,6 +403,9 @@ fn describe_tool_result(tool: &ask_athena_tools::AskAthenaTool, count: usize) ->
             format!("Found {count} deadline(s) matching that description.")
         }
         ask_athena_tools::AskAthenaTool::GetCourse { .. } => "Found a matching course.".to_string(),
+        ask_athena_tools::AskAthenaTool::ListCourses => {
+            format!("Found {count} course(s) in the current semester.")
+        }
         ask_athena_tools::AskAthenaTool::GetDisruptionHistory { .. } => {
             format!("Found {count} logged disruption(s) in that window.")
         }

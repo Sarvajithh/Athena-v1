@@ -668,6 +668,18 @@ fn row_to_calendar_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarEv
     })
 }
 
+/// Wipes the local `calendar_events` cache — called before syncing a
+/// newly-picked calendar (`set_google_calendar_id`) so a switch doesn't
+/// leave the old calendar's events mixed in with (or masking whether
+/// there even are) the new one's. `upsert_calendar_event` keys on
+/// `event_id` alone, which has no relationship to which calendar an
+/// event came from, so without this a switch just accumulates events
+/// from every calendar ever synced.
+pub fn clear_calendar_events(conn: &Connection) -> Result<(), DataError> {
+    conn.execute("DELETE FROM calendar_events", [])?;
+    Ok(())
+}
+
 pub fn upsert_calendar_event(conn: &Connection, new: &NewCalendarEvent) -> Result<(), DataError> {
     conn.execute(
         "INSERT INTO calendar_events (event_id, title, starts_at, location, description, fetched_at) \

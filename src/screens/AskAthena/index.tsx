@@ -89,9 +89,10 @@ export default function AskAthena() {
         const convos = await listAskAthenaConversations();
         if (cancelled) return;
         setConversations(convos);
-        if (convos.length > 0) {
-          setConversationId(convos[0].conversation_id);
-          const rows = await getAskAthenaConversation(convos[0].conversation_id);
+        const mostRecent = convos[0];
+        if (mostRecent) {
+          setConversationId(mostRecent.conversation_id);
+          const rows = await getAskAthenaConversation(mostRecent.conversation_id);
           if (!cancelled) setMessages(rows.map(rowToChatMessage));
         }
       } catch {

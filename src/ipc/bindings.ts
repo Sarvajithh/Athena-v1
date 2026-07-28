@@ -68,6 +68,11 @@ export interface SemesterRow {
   created_at: string;
 }
 
+export interface GradingComponent {
+  category: string;
+  weight: number;
+}
+
 export interface CourseRow {
   id: number;
   semester_id: number;
@@ -80,6 +85,9 @@ export interface CourseRow {
   meeting_pattern: MeetingSlot[];
   status: CourseStatus;
   created_at: string;
+  notes: string | null;
+  syllabus_text: string | null;
+  grading_breakdown: GradingComponent[];
 }
 
 export interface DeadlineRow {
@@ -332,6 +340,9 @@ export interface CourseInput {
   instructor: string | null;
   target_grade: string | null;
   meeting_pattern: MeetingSlot[];
+  notes: string | null;
+  syllabus_text: string | null;
+  grading_breakdown: GradingComponent[];
 }
 
 export interface DeadlineInput {
@@ -360,6 +371,16 @@ export async function commitSemesterSetup(input: CommitSemesterSetupInput): Prom
 /** Adds a single course to the *current* semester. Returns the new `courses.id`. */
 export async function addCourseToSemester(input: CourseInput): Promise<number> {
   return invoke<number>("add_course_to_semester", { input });
+}
+
+/**
+ * Extracts plain text from an uploaded syllabus PDF (base64-encoded —
+ * Tauri IPC has no native binary transfer). Returns '' rather than
+ * throwing for a PDF with no extractable text (e.g. scanned pages) —
+ * caller should treat that as "nothing found," not an error.
+ */
+export async function extractSyllabusText(base64Pdf: string): Promise<string> {
+  return invoke<string>("extract_syllabus_text", { base64Pdf });
 }
 
 /** How many deadlines currently reference this course — call before showing a delete-confirm dialog. */
@@ -624,6 +645,22 @@ export async function startGoogleCalendarOauth(): Promise<DataSourceDto> {
 
 export async function disconnectGoogleCalendar(): Promise<void> {
   return invoke<void>("disconnect_google_calendar");
+}
+
+export interface CalendarListEntryDto {
+  id: string;
+  summary: string;
+  primary: boolean;
+}
+
+/** Every calendar the connected token can see — populates the "which calendar?" picker. */
+export async function listGoogleCalendars(): Promise<CalendarListEntryDto[]> {
+  return invoke<CalendarListEntryDto[]>("list_google_calendars");
+}
+
+/** Saves which calendar(s) to read (multi-select) and re-syncs immediately. */
+export async function setGoogleCalendarIds(calendarIds: string[]): Promise<DataSourceDto> {
+  return invoke<DataSourceDto>("set_google_calendar_ids", { calendarIds });
 }
 
 export interface CalendarEventDto {

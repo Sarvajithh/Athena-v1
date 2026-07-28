@@ -318,6 +318,7 @@ dependencies = [
  "dirs 5.0.1",
  "dotenvy",
  "keyring",
+ "pdf-extract",
  "rand 0.8.7",
  "rusqlite",
  "serde",

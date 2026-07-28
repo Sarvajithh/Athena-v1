@@ -15,6 +15,18 @@ pub struct MeetingSlot {
     pub end: String,
 }
 
+/// One row of `courses.grading_breakdown`'s JSON array — a category
+/// ("Midterm") and its weight as a whole-number percent. The UI
+/// (`CourseEntryStep.tsx`) is the only writer of this column and
+/// enforces weights sum to 100 before commit; nothing here re-validates
+/// that, same "one writer, one place the rule lives" reasoning as
+/// `find_fuzzy`'s normalization helper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GradingComponent {
+    pub category: String,
+    pub weight: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CourseRow {
     pub id: i64,
@@ -28,6 +40,12 @@ pub struct CourseRow {
     pub meeting_pattern: Vec<MeetingSlot>,
     pub status: String,
     pub created_at: String,
+    /// "Course Context" fields (V12) — free-text notes, extracted
+    /// syllabus text, and a structured grading breakdown. All three are
+    /// optional enrichment, never required to commit a semester.
+    pub notes: Option<String>,
+    pub syllabus_text: Option<String>,
+    pub grading_breakdown: Vec<GradingComponent>,
 }
 
 /// Fields collected by Semester Setup Step 1 (03_ONBOARDING.md §3 Step 1).
@@ -40,11 +58,21 @@ pub struct NewCourse {
     pub instructor: Option<String>,
     pub target_grade: Option<String>,
     pub meeting_pattern: Vec<MeetingSlot>,
+    pub notes: Option<String>,
+    pub syllabus_text: Option<String>,
+    pub grading_breakdown: Vec<GradingComponent>,
 }
+
+const COURSE_COLUMNS: &str = "id, semester_id, code, title, credits, leverage_class, instructor, \
+     target_grade, meeting_pattern, status, created_at, notes, syllabus_text, grading_breakdown";
 
 fn row_to_course(row: &rusqlite::Row<'_>) -> rusqlite::Result<CourseRow> {
     let meeting_pattern_json: Option<String> = row.get(8)?;
     let meeting_pattern = meeting_pattern_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let grading_breakdown_json: Option<String> = row.get(13)?;
+    let grading_breakdown = grading_breakdown_json
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
@@ -60,14 +88,16 @@ fn row_to_course(row: &rusqlite::Row<'_>) -> rusqlite::Result<CourseRow> {
         meeting_pattern,
         status: row.get(9)?,
         created_at: row.get(10)?,
+        notes: row.get(11)?,
+        syllabus_text: row.get(12)?,
+        grading_breakdown,
     })
 }
 
 pub fn list_by_semester(conn: &Connection, semester_id: i64) -> Result<Vec<CourseRow>, DataError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, semester_id, code, title, credits, leverage_class, instructor, target_grade, \
-         meeting_pattern, status, created_at FROM courses WHERE semester_id = ?1 ORDER BY id",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COURSE_COLUMNS} FROM courses WHERE semester_id = ?1 ORDER BY id"
+    ))?;
     let rows = stmt
         .query_map(params![semester_id], row_to_course)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -84,10 +114,16 @@ pub fn insert_courses(
     let mut ids = Vec::with_capacity(courses.len());
     for course in courses {
         let meeting_pattern_json = serde_json::to_string(&course.meeting_pattern)?;
+        let grading_breakdown_json = if course.grading_breakdown.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&course.grading_breakdown)?)
+        };
 
         tx.execute(
             "INSERT INTO courses (semester_id, code, title, credits, leverage_class, instructor, \
-             target_grade, meeting_pattern, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active')",
+             target_grade, meeting_pattern, status, notes, syllabus_text, grading_breakdown) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?10, ?11)",
             params![
                 semester_id,
                 course.code,
@@ -97,6 +133,9 @@ pub fn insert_courses(
                 course.instructor,
                 course.target_grade,
                 meeting_pattern_json,
+                course.notes,
+                course.syllabus_text,
+                grading_breakdown_json,
             ],
         )?;
         ids.push(tx.last_insert_rowid());
@@ -174,10 +213,7 @@ pub fn find_fuzzy(conn: &Connection, identifier: &str) -> Result<Option<CourseRo
         return Ok(None);
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT id, semester_id, code, title, credits, leverage_class, instructor, target_grade, \
-         meeting_pattern, status, created_at FROM courses",
-    )?;
+    let mut stmt = conn.prepare(&format!("SELECT {COURSE_COLUMNS} FROM courses"))?;
     let all: Vec<CourseRow> = stmt.query_map([], row_to_course)?.collect::<Result<Vec<_>, _>>()?;
 
     // Exact (normalized) code match first.
@@ -229,6 +265,9 @@ mod tests {
                 instructor: None,
                 target_grade: None,
                 meeting_pattern: vec![],
+                notes: None,
+                syllabus_text: None,
+                grading_breakdown: vec![],
             }],
         )
         .unwrap();
@@ -256,6 +295,9 @@ mod tests {
                 instructor: None,
                 target_grade: None,
                 meeting_pattern: vec![],
+                notes: None,
+                syllabus_text: None,
+                grading_breakdown: vec![],
             }],
         )
         .unwrap();
@@ -290,6 +332,9 @@ mod tests {
                 instructor: None,
                 target_grade: None,
                 meeting_pattern: vec![],
+                notes: None,
+                syllabus_text: None,
+                grading_breakdown: vec![],
             }],
         )
         .unwrap();

@@ -14,15 +14,13 @@
 use crate::context::EvidencePayload;
 use crate::provider::PromptRequest;
 
-/// §8's tone constraint, verbatim, identical across every capability —
-/// no capability gets its own persona. Extended (Ask Athena rebuild,
-/// Part 4) with an explicit anti-guilt clause: this app is used by
-/// students who are already anxious about their workload, and a
-/// judgmental tone about lateness/procrastination actively works
-/// against the app's purpose. This applies everywhere, not just Ask
-/// Athena — "no capability gets its own persona" cuts both ways, a
-/// tone fix belongs in the one shared persona, not bolted onto one
-/// capability's prompt.
+/// §8's tone constraint, verbatim, identical across every
+/// verdict-restating capability (daily_briefing, weekly_planning,
+/// weakness_analysis, and the Reflection Engine's follow-up questions
+/// on any of those) — no capability gets its own persona *for that
+/// group*. See `CHAT_PERSONA` below for why `ask_athena` is a
+/// deliberate, documented exception rather than a violation of that
+/// rule.
 const PERSONA: &str = "You are Athena's phrasing layer, not its decision layer. Every fact, ranking, \
     weakness, and confidence class below was already decided by deterministic code before you were \
     called. Your only job is to turn the verdict and evidence into one well-reasoned, well-formatted \
@@ -34,10 +32,36 @@ const PERSONA: &str = "You are Athena's phrasing layer, not its decision layer. 
     claim that is not present in the verdict or evidence JSON below — if you cannot support a sentence \
     with an evidence ID, do not write that sentence.";
 
-/// The fixed output shape every capability's Stage 4 response must
-/// satisfy (§7.4, §11): a restated verdict, grounded reasoning
-/// sentence(s), and citations by evidence ID — constrained output is
-/// what makes Stage 5's grounding check mechanical.
+/// Ask Athena's persona (bug fix, prompted by chat producing nothing
+/// but "no verdict to restate" for every message with no matching
+/// evidence — i.e. almost every chat message). `PERSONA` above is
+/// correct for the other four capabilities: they always have a real
+/// Stage 2 verdict, and the model's only job is safely phrasing it.
+/// Ask Athena has no Stage 2 verdict *by design* (see
+/// `capabilities/ask_athena.rs`'s module doc) — it's open
+/// conversation. Applying `PERSONA`'s "never say anything not in the
+/// evidence JSON" rule to open conversation doesn't make chat safer,
+/// it makes chat impossible: the model has nothing to say about
+/// general study advice, explaining a concept, or brainstorming a
+/// schedule, none of which comes from `evidence` and none of which
+/// should. The grounding discipline is preserved for the one thing
+/// that actually needs it — specific claims about *this user's*
+/// courses/deadlines/grades — and lifted for everything else.
+const CHAT_PERSONA: &str = "You are Athena, a direct, economical academic-life assistant having an \
+    open conversation with a student. Answer their message directly and helpfully — general study \
+    advice, explanations, brainstorming, and encouragement are all fine and do not need to come from \
+    the evidence JSON below. The evidence JSON, when non-empty, is real data pulled from this specific \
+    student's own courses/deadlines — any claim you make about their specific courses, deadlines, \
+    grades, or schedule must be grounded in it and cited by ID; do not invent a course name, due date, \
+    or grade that isn't there. When the evidence JSON is empty, that just means nothing in their data \
+    matched this message — say so plainly if it's relevant, then still answer the actual question \
+    using your own knowledge. Never use guilt, urgency-shaming, or exclamation-point pep-talk energy. \
+    Be concise: a few sentences unless the question genuinely calls for more.";
+
+/// The fixed output shape every verdict-restating capability's Stage 4
+/// response must satisfy (§7.4, §11): a restated verdict, grounded
+/// reasoning sentence(s), and citations by evidence ID — constrained
+/// output is what makes Stage 5's grounding check mechanical.
 const OUTPUT_SCHEMA: &str = r#"{
   "type": "object",
   "required": ["verdict", "reasoning", "citations"],
@@ -45,6 +69,23 @@ const OUTPUT_SCHEMA: &str = r#"{
     "verdict": { "type": "string", "description": "One-sentence restatement of the Stage 2 verdict headline." },
     "reasoning": { "type": "string", "description": "1-3 sentences of grounded reasoning, citing only IDs present in the evidence JSON." },
     "citations": { "type": "array", "items": { "type": "integer" }, "description": "Evidence IDs actually cited in `reasoning`." }
+  }
+}"#;
+
+/// Ask Athena's output shape — `answer` replaces `reasoning`/`verdict`
+/// entirely (there's no verdict to restate, see `CHAT_PERSONA`) and is
+/// allowed to be a real conversational answer, not a 1-3 sentence
+/// grounded restatement. `citations` keeps the same meaning: evidence
+/// IDs actually relied on, checked against `payload.evidence` by
+/// `pipeline.rs`'s grounding check exactly as it is for every other
+/// capability — Stage 5 isn't relaxed, only Stage 3/4's persona and
+/// schema are, and only for this one capability.
+const CHAT_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "required": ["answer", "citations"],
+  "properties": {
+    "answer": { "type": "string", "description": "A direct, conversational answer to the user's message." },
+    "citations": { "type": "array", "items": { "type": "integer" }, "description": "Evidence IDs relied on for any claim about the user's specific courses/deadlines/grades. Empty if none were needed." }
   }
 }"#;
 
@@ -81,6 +122,7 @@ impl PromptBuilder {
         .to_string();
 
         let evidence_json = serde_json::to_string(&payload.evidence).unwrap_or_else(|_| "[]".to_string());
+        let is_chat = payload.capability == "ask_athena";
 
         // Stage 5's grounding check treats any citation ID outside the
         // evidence set as a failure (pipeline.rs's `grounded_recommendation`).
@@ -94,11 +136,14 @@ impl PromptBuilder {
         // fixes it before the first attempt instead of relying on a retry
         // to catch it after the fact.
         let mut system = if payload.evidence.is_empty() {
+            let base = if is_chat { CHAT_PERSONA } else { PERSONA };
             format!(
-                "{PERSONA} There is no evidence for this request — the evidence JSON below is `[]`. \
+                "{base} There is no evidence for this request — the evidence JSON below is `[]`. \
                  You MUST return \"citations\": []. Do not invent, guess, or reuse an ID; any \
                  non-empty citations array here will be rejected."
             )
+        } else if is_chat {
+            CHAT_PERSONA.to_string()
         } else {
             PERSONA.to_string()
         };
@@ -116,7 +161,7 @@ impl PromptBuilder {
             system,
             verdict_json,
             evidence_json,
-            output_schema: OUTPUT_SCHEMA.to_string(),
+            output_schema: if is_chat { CHAT_OUTPUT_SCHEMA.to_string() } else { OUTPUT_SCHEMA.to_string() },
             question,
             conversation_context,
             stricter: false,
@@ -180,6 +225,46 @@ mod tests {
         };
         let request = PromptBuilder::build(&payload, None);
         assert!(!request.system.contains("\"citations\": []"));
+    }
+
+    #[test]
+    fn ask_athena_gets_the_chat_schema_not_the_verdict_schema() {
+        // Regression test for the bug where every chat message got
+        // "Free-form question, no Decision Engine verdict to restate."
+        // back verbatim: `OUTPUT_SCHEMA` requires `reasoning` restricted
+        // to citing evidence IDs, which is empty for almost every chat
+        // message, so the model correctly had nothing to say. Chat must
+        // get `CHAT_OUTPUT_SCHEMA` (`answer`, not `reasoning`) instead.
+        let payload = EvidencePayload {
+            capability: "ask_athena",
+            verdict_headline: "Ask Athena".into(),
+            verdict_reasoning: "Free-form question, no Decision Engine verdict to restate.".into(),
+            confidence: "insufficient_data",
+            evidence: vec![],
+            data_freshness_note: "as of now".into(),
+        };
+        let request = PromptBuilder::build(&payload, Some("what's a good way to study for finals?".into()));
+        assert!(request.output_schema.contains("\"answer\""));
+        assert!(!request.output_schema.contains("\"reasoning\""));
+        assert!(
+            request.system.contains("general study advice"),
+            "chat mode should get CHAT_PERSONA, not the restate-only PERSONA"
+        );
+    }
+
+    #[test]
+    fn non_chat_capabilities_still_get_the_verdict_schema() {
+        let payload = EvidencePayload {
+            capability: "daily_briefing",
+            verdict_headline: "Work on: X".into(),
+            verdict_reasoning: "because Y".into(),
+            confidence: "inferred",
+            evidence: vec![],
+            data_freshness_note: "as of now".into(),
+        };
+        let request = PromptBuilder::build(&payload, None);
+        assert!(request.output_schema.contains("\"reasoning\""));
+        assert!(!request.output_schema.contains("\"answer\""));
     }
 
     #[test]

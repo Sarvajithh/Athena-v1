@@ -133,6 +133,9 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
         instructor: null,
         target_grade: null,
         meeting_pattern: [],
+        notes: null,
+        syllabus_text: null,
+        grading_breakdown: [],
       };
       await addCourseToSemester(input);
       setCourseForm(emptyCourseForm());

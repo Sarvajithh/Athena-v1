@@ -17,7 +17,7 @@ import { DeadlineEntryStep } from './DeadlineEntryStep';
 import { PhaseStrip } from './PhaseStrip';
 import { SemesterAtAGlance } from './SemesterAtAGlance';
 import styles from './SemesterSetup.module.css';
-import { newCourseRow, newDeadlineRow, type CourseRowState, type DeadlineRowState } from './types';
+import { gradingBreakdownValid, newCourseRow, newDeadlineRow, type CourseRowState, type DeadlineRowState } from './types';
 import { WizardStepShell } from './WizardStepShell';
 /**
  * Semester Setup — the re-derivation wizard run at the start of each
@@ -148,8 +148,14 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
       case 0:
         return label.trim().length > 0 && startsOn.length > 0 && endsOn.length > 0;
       case 1:
+        // Courses can be empty (only the Courses+Deadlines sum must be
+        // non-zero, checked at Review) — but any row with a grading
+        // breakdown started must sum to 100 before moving on, same
+        // "the UI is the only validator of this column" rule the V12
+        // migration's comment describes.
+        return courses.every(gradingBreakdownValid);
       case 2:
-        return true; // Courses/deadlines can each be empty individually — only their sum must be non-zero.
+        return true;
       default:
         return true;
     }
@@ -170,6 +176,11 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
         instructor: c.instructor.trim() ? c.instructor.trim() : null,
         target_grade: c.targetGrade.trim() ? c.targetGrade.trim() : null,
         meeting_pattern: [],
+        notes: c.notes.trim() ? c.notes.trim() : null,
+        syllabus_text: c.syllabusText.trim() ? c.syllabusText.trim() : null,
+        grading_breakdown: c.gradingBreakdown
+          .filter((g) => g.category.trim())
+          .map((g) => ({ category: g.category.trim(), weight: Number.parseInt(g.weight, 10) || 0 })),
       }));
 
       // Map each surviving deadline's course selection to its index within
@@ -299,7 +310,20 @@ export default function SemesterSetup({ mode = 'standalone', onComplete }: Semes
           </div>
         )}
 
-        {step === 1 && <CourseEntryStep styles={styles} courses={courses} onChange={setCourses} />}
+        {step === 1 && (
+          <>
+            <CourseEntryStep styles={styles} courses={courses} onChange={setCourses} />
+            {!canAdvanceFromStep(1) && (
+              <p className={`${styles.error} type-caption`}>
+                {(() => {
+                  const bad = courses.filter((c) => !gradingBreakdownValid(c));
+                  const names = bad.map((c) => c.code.trim() || c.title.trim() || 'this course').join(', ');
+                  return `Grading breakdown for ${names} doesn't sum to 100% yet — open "Add details" on that course to fix or remove it before continuing.`;
+                })()}
+              </p>
+            )}
+          </>
+        )}
 
         {step === 2 && (
           <DeadlineEntryStep styles={styles} deadlines={deadlines} courses={courses} onChange={setDeadlines} />

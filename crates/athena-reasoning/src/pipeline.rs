@@ -19,15 +19,24 @@ use crate::output::Recommendation;
 use crate::prompt::PromptBuilder;
 use crate::provider::LlmProvider;
 
-/// The raw shape a provider's JSON response is expected to satisfy
-/// (`prompt::OUTPUT_SCHEMA`). Parsing into this struct *is* most of
-/// Stage 5's mechanical check — a response that doesn't even deserialize
-/// this way is treated as a grounding failure, not specially handled.
+/// The raw shape a provider's JSON response is expected to satisfy —
+/// `prompt::OUTPUT_SCHEMA` for verdict-restating capabilities
+/// (`reasoning` populated, `answer` absent) or `prompt::CHAT_OUTPUT_SCHEMA`
+/// for `ask_athena` (`answer` populated, `reasoning` absent). Both are
+/// optional here rather than two separate structs so parsing doesn't
+/// need to know which schema was requested before it's read the
+/// response — `grounded_recommendation` picks the right one by
+/// `payload.capability` after parsing, same "one mechanical check" (see
+/// this module's doc comment) whichever field arrived.
 #[derive(Debug, Deserialize)]
 struct SynthesisResponse {
     #[allow(dead_code)]
+    #[serde(default)]
     verdict: String,
+    #[serde(default)]
     reasoning: String,
+    #[serde(default)]
+    answer: String,
     #[serde(default)]
     citations: Vec<i64>,
 }
@@ -230,24 +239,15 @@ impl Synthesizer {
         provider_name: &str,
     ) -> Option<Recommendation> {
         let candidate = Self::extract_json_object(raw);
-        println!("candidate = {:?}", candidate);
+        let parsed: SynthesisResponse = serde_json::from_str(candidate).ok()?;
 
-        let parsed: SynthesisResponse = match serde_json::from_str(candidate) {
-            Ok(v) => {
-                println!("parsed = {:?}", v);
-                v
-            }
-            Err(e) => {
-                println!("JSON error = {}", e);
-                return None;
-            }
-        };
+        // Chat mode (`ask_athena`) asked for `answer`, not `reasoning` —
+        // see `CHAT_OUTPUT_SCHEMA`'s doc comment for why they're two
+        // different fields rather than one repurposed one. Every other
+        // capability keeps using `reasoning` exactly as before.
+        let text = if payload.capability == "ask_athena" { parsed.answer } else { parsed.reasoning };
 
-        println!("known ids = {:?}", payload.evidence.iter().map(|e| e.id).collect::<Vec<_>>());
-        println!("citations = {:?}", parsed.citations);
-
-        if parsed.reasoning.trim().is_empty() {
-            println!("empty reasoning");
+        if text.trim().is_empty() {
             return None;
         }
 
@@ -255,13 +255,12 @@ impl Synthesizer {
             payload.evidence.iter().map(|e| e.id).collect();
 
         if parsed.citations.iter().any(|id| !known_ids.contains(id)) {
-            println!("unknown citation");
             return None;
         }
 
         Some(Recommendation::from_synthesis(
             payload,
-            parsed.reasoning,
+            text,
             parsed.citations,
             provider_name,
         ))
@@ -317,6 +316,39 @@ mod tests {
             rec.is_some(),
             "fenced JSON from a local model should still ground successfully"
         );
+    }
+
+    #[test]
+    fn ask_athena_reads_the_answer_field_not_reasoning() {
+        let raw = r#"{"answer": "Try spaced repetition over the next two weeks.", "citations": []}"#;
+        let chat_payload = EvidencePayload {
+            capability: "ask_athena",
+            verdict_headline: "Ask Athena".into(),
+            verdict_reasoning: "Free-form question, no Decision Engine verdict to restate.".into(),
+            confidence: "insufficient_data",
+            evidence: vec![],
+            data_freshness_note: "as of now".into(),
+        };
+        let rec = Synthesizer::grounded_recommendation(&chat_payload, raw, "ollama")
+            .expect("a well-formed chat answer with no citations should ground");
+        assert_eq!(rec.reasoning, "Try spaced repetition over the next two weeks.");
+    }
+
+    #[test]
+    fn ask_athena_with_only_reasoning_field_fails_grounding() {
+        // Old-shape output (from the bug this fixes) shouldn't silently
+        // pass — `answer` is empty, so this must fall through to the
+        // template rather than surface an accidentally-empty response.
+        let raw = r#"{"reasoning": "Free-form question, no Decision Engine verdict to restate.", "citations": []}"#;
+        let chat_payload = EvidencePayload {
+            capability: "ask_athena",
+            verdict_headline: "Ask Athena".into(),
+            verdict_reasoning: "Free-form question, no Decision Engine verdict to restate.".into(),
+            confidence: "insufficient_data",
+            evidence: vec![],
+            data_freshness_note: "as of now".into(),
+        };
+        assert!(Synthesizer::grounded_recommendation(&chat_payload, raw, "ollama").is_none());
     }
 
     fn payload() -> EvidencePayload {

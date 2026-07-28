@@ -99,3 +99,13 @@ tauri-plugin-notification = "2"
 # version as athena-data (the only crate that opens/migrates it).
 rusqlite = { version = "0.31", features = ["bundled"] }
 dotenvy = "0.15.7"
+
+# "Course Context" (Semester Setup reshape): extracts plain text from an
+# uploaded syllabus PDF, stored as `courses.syllabus_text` — reference
+# material only, never auto-parsed into `grading_breakdown` (see
+# `course.rs`'s doc comment on that column). Pure-Rust, no system
+# Poppler/pdftotext dependency, matching this workspace's existing
+# preference for self-contained crates (`rusqlite`'s `bundled` feature,
+# same reasoning) over anything requiring an external binary on the
+# user's machine.
+pdf-extract = "0.7"
