@@ -46,6 +46,11 @@ pub struct CourseRow {
     pub notes: Option<String>,
     pub syllabus_text: Option<String>,
     pub grading_breakdown: Vec<GradingComponent>,
+    /// V15 — which Google Classroom course (if any) this local course
+    /// has been explicitly linked to. `None` until `link_classroom_course`
+    /// is called; see that migration's doc comment for why this is a
+    /// person-confirmed link rather than an automatic name match.
+    pub classroom_course_id: Option<String>,
 }
 
 /// Fields collected by Semester Setup Step 1 (03_ONBOARDING.md §3 Step 1).
@@ -64,7 +69,8 @@ pub struct NewCourse {
 }
 
 const COURSE_COLUMNS: &str = "id, semester_id, code, title, credits, leverage_class, instructor, \
-     target_grade, meeting_pattern, status, created_at, notes, syllabus_text, grading_breakdown";
+     target_grade, meeting_pattern, status, created_at, notes, syllabus_text, grading_breakdown, \
+     classroom_course_id";
 
 fn row_to_course(row: &rusqlite::Row<'_>) -> rusqlite::Result<CourseRow> {
     let meeting_pattern_json: Option<String> = row.get(8)?;
@@ -91,6 +97,7 @@ fn row_to_course(row: &rusqlite::Row<'_>) -> rusqlite::Result<CourseRow> {
         notes: row.get(11)?,
         syllabus_text: row.get(12)?,
         grading_breakdown,
+        classroom_course_id: row.get(14)?,
     })
 }
 
@@ -143,6 +150,37 @@ pub fn insert_courses(
     Ok(ids)
 }
 
+/// Overwrites `notes` for one course — the Semester screen's course
+/// list needs this because the simplified "Add course" form there
+/// (unlike the old Semester Setup wizard's `CourseEntryStep`) doesn't
+/// collect notes up front, and a messy-but-trying student's context on
+/// a course ("seminar-style, prof grades hard") is exactly the kind of
+/// thing that gets added after the fact, not during a 30-second
+/// add-course form. `true` if the course existed.
+pub fn update_notes(conn: &Connection, course_id: i64, notes: Option<&str>) -> Result<bool, DataError> {
+    let affected = conn.execute(
+        "UPDATE courses SET notes = ?1 WHERE id = ?2",
+        params![notes, course_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Links (or unlinks, if `classroom_course_id` is `None`) this course to
+/// a Google Classroom course — see V15's doc comment for why this is a
+/// one-time, person-confirmed action rather than automatic name
+/// matching. `true` if the course existed.
+pub fn link_classroom_course(
+    conn: &Connection,
+    course_id: i64,
+    classroom_course_id: Option<&str>,
+) -> Result<bool, DataError> {
+    let affected = conn.execute(
+        "UPDATE courses SET classroom_course_id = ?1 WHERE id = ?2",
+        params![classroom_course_id, course_id],
+    )?;
+    Ok(affected > 0)
+}
+
 /// How many deadlines currently reference `course_id` — read before
 /// deleting a course so the caller can surface an honest count in a
 /// confirm prompt ("this will also delete N linked deadlines") rather
@@ -157,22 +195,27 @@ pub fn count_linked_deadlines(conn: &Connection, course_id: i64) -> Result<i64, 
 }
 
 /// Deletes one course and every deadline that references it
-/// (`deadlines.course_id`). Cascade, not unlink: nothing in this schema
-/// enforces the `REFERENCES courses(id)` FK at the SQLite level (no
-/// `PRAGMA foreign_keys = ON` anywhere in `connection.rs`), so a plain
-/// `DELETE FROM courses` alone would leave orphaned `course_id` values
-/// behind rather than erroring — cascading explicitly here is what
-/// keeps the row honest, and matches student intent ("this course is
-/// gone, so is its stuff") rather than silently detaching deadlines
-/// from a course that no longer exists. Both deletes happen in one
+/// (`deadlines.course_id`), and every log entry it has accumulated
+/// (`course_logs.course_id`, V13). Cascade, not unlink: nothing in this
+/// schema enforces the `REFERENCES courses(id)` FK at the SQLite level
+/// (no `PRAGMA foreign_keys = ON` anywhere in `connection.rs`), so a
+/// plain `DELETE FROM courses` alone would leave orphaned rows behind
+/// rather than erroring — cascading explicitly here is what keeps the
+/// row honest, and matches student intent ("this course is gone, so is
+/// its stuff") rather than silently detaching deadlines/logs from a
+/// course that no longer exists. All three deletes happen in one
 /// transaction so a failure partway through never leaves the course
-/// gone with its deadlines still around, or vice versa. Returns
+/// gone with its deadlines or logs still around, or vice versa. Returns
 /// `(course_deleted, deadlines_deleted)`; `false`/`0` if `id` didn't
 /// exist, same idempotent-not-fussy contract as `deadline::delete`.
+/// Deleted log count isn't returned — logs are informal enough that,
+/// unlike deadlines, nothing shows a "this will delete N log entries"
+/// confirm prompt for them.
 pub fn delete_cascade(conn: &mut Connection, course_id: i64) -> Result<(bool, i64), DataError> {
     let tx = conn.transaction()?;
     let deadlines_deleted =
         tx.execute("DELETE FROM deadlines WHERE course_id = ?1", params![course_id])? as i64;
+    tx.execute("DELETE FROM course_logs WHERE course_id = ?1", params![course_id])?;
     let course_deleted = tx.execute("DELETE FROM courses WHERE id = ?1", params![course_id])? > 0;
     tx.commit()?;
     Ok((course_deleted, deadlines_deleted))
@@ -239,6 +282,91 @@ pub fn find_fuzzy(conn: &Connection, identifier: &str) -> Result<Option<CourseRo
         }
     }
     Ok(best.map(|(_, row)| row.clone()))
+}
+
+/// Noise words stripped out before comparing course names for
+/// automatic Classroom linking (`significant_words`) — section/slot
+/// labels and admin words that show up in a Classroom course name but
+/// were never typed into the person's own Semester Setup title.
+const MATCH_STOPWORDS: &[&str] = &[
+    "slot", "section", "sec", "batch", "group", "grp", "lab", "lecture", "tutorial", "course", "class", "div",
+    "division", "semester", "sem", "the", "and", "of", "for", "in", "to",
+];
+
+/// `normalize_for_search`, plus dropping stopwords and single-character
+/// tokens (section letters like the "p" in "Slot P" land here) — what's
+/// left is the words that actually identify *which course*, used by
+/// `find_unlinked_strict_match`'s word-overlap signal.
+fn significant_words(text: &str) -> std::collections::HashSet<String> {
+    normalize_for_search(text)
+        .split(' ')
+        .filter(|w| w.len() > 1 && !MATCH_STOPWORDS.contains(w))
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Automatic-linking matcher for Classroom courses
+/// (`run_google_classroom_sync`, `pull_classroom_materials`) — more
+/// permissive than a plain substring check, because Classroom section
+/// names routinely bury the course under text a person never typed
+/// into Semester Setup: "Robotics Slot P" for a course entered locally
+/// as just "Robotics" (code "AI3000"), for example. Two independent
+/// signals, either sufficient on its own:
+///
+/// 1. **Code match** — the local course's `code` (e.g. "AI3000"),
+///    space-stripped, appears verbatim inside the Classroom name (also
+///    space-stripped) — catches names like "2026-AI3000-..." even when
+///    the title text itself doesn't overlap at all.
+/// 2. **Full significant-word overlap** — both names reduced to
+///    `significant_words` (noise like "slot"/"section" and single
+///    letters removed); a match requires *every* word on the smaller
+///    side to appear on the other side. "Robotics" fully matches
+///    "Robotics Slot P" (its one significant word, "robotics", is
+///    present); "Robotics" would NOT fully match "Robotics Lab
+///    Advanced Topics" (2 of that side's 3 significant words are
+///    unaccounted for) — that ambiguity is exactly what the manual
+///    dropdown in the course details panel stays available for.
+///
+/// Scored so the single *best* unlinked candidate wins when more than
+/// one could plausibly match: a code match always outranks a
+/// word-overlap match, and among word-overlap matches, more
+/// overlapping words wins. Only considers courses not already linked
+/// to *some* Classroom course, so this can never override an existing
+/// link, whether that link was picked automatically on an earlier sync
+/// or set by hand.
+pub fn find_unlinked_strict_match(conn: &Connection, classroom_name: &str) -> Result<Option<CourseRow>, DataError> {
+    let normalized_name = normalize_for_search(classroom_name);
+    if normalized_name.is_empty() {
+        return Ok(None);
+    }
+    let compact_name = normalized_name.replace(' ', "");
+    let classroom_words = significant_words(classroom_name);
+
+    let mut stmt =
+        conn.prepare(&format!("SELECT {COURSE_COLUMNS} FROM courses WHERE classroom_course_id IS NULL"))?;
+    let candidates: Vec<CourseRow> = stmt.query_map([], row_to_course)?.collect::<Result<Vec<_>, _>>()?;
+
+    let mut best: Option<(i64, CourseRow)> = None;
+    for c in candidates {
+        let compact_code = normalize_for_search(&c.code).replace(' ', "");
+        let code_match = !compact_code.is_empty() && compact_name.contains(&compact_code);
+
+        let title_words = significant_words(&c.title);
+        let smaller_side = title_words.len().min(classroom_words.len());
+        let overlap = title_words.intersection(&classroom_words).count();
+        let full_word_overlap = smaller_side > 0 && overlap == smaller_side;
+
+        if !code_match && !full_word_overlap {
+            continue;
+        }
+        let score = if code_match { 2_000_000 } else { 1_000_000 + overlap as i64 };
+
+        if best.as_ref().map(|(best_score, _)| score > *best_score).unwrap_or(true) {
+            best = Some((score, c));
+        }
+    }
+
+    Ok(best.map(|(_, c)| c))
 }
 
 #[cfg(test)]

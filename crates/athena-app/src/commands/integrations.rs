@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use athena_data::repositories::course as course_repo;
 use athena_data::repositories::integrations as integrations_repo;
 use athena_ingestion::connectors::{
     calendar_ics, codeforces, csv_import, github, gmail, google_calendar, google_classroom, leetcode, notion,
@@ -824,9 +825,25 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
                         },
                     )
                     .map_err(|e| e.to_string())?;
+
+                    // Auto-link this Classroom course to a matching
+                    // local course, if one exists and isn't already
+                    // linked to something else — see
+                    // `find_unlinked_strict_match`'s doc comment for
+                    // why this only fires on a strict title match.
+                    // Never overrides a link the person set by hand
+                    // (that's exactly what "isn't already linked"
+                    // guards against — an already-linked course is
+                    // simply not a candidate here).
+                    if let Some(local_course) =
+                        course_repo::find_unlinked_strict_match(&conn, &course.name).map_err(|e| e.to_string())?
+                    {
+                        course_repo::link_classroom_course(&conn, local_course.id, Some(&course.course_id))
+                            .map_err(|e| e.to_string())?;
+                    }
                 } // conn dropped here
 
-                if let Ok(coursework) =
+                if let Ok((coursework, cw_materials)) =
                     google_classroom::fetch_coursework(&access_token, &course.course_id).await
                 {
                     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -844,9 +861,23 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
                         )
                         .map_err(|e| e.to_string())?;
                     }
+
+                    for m in cw_materials {
+                        integrations_repo::upsert_classroom_material(
+                            &conn,
+                            &integrations_repo::NewClassroomMaterial {
+                                course_id: m.course_id,
+                                material_id: m.material_id,
+                                title: m.title,
+                                material_type: m.material_type,
+                                posted_at: m.posted_at,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                 }
 
-                if let Ok(announcements) =
+                if let Ok((announcements, ann_materials)) =
                     google_classroom::fetch_announcements(&access_token, &course.course_id).await
                 {
                     let conn = db.lock().map_err(|e| e.to_string())?;
@@ -859,6 +890,40 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
                                 announcement_id: a.announcement_id,
                                 text: a.text,
                                 posted_at: a.posted_at,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+
+                    for m in ann_materials {
+                        integrations_repo::upsert_classroom_material(
+                            &conn,
+                            &integrations_repo::NewClassroomMaterial {
+                                course_id: m.course_id,
+                                material_id: m.material_id,
+                                title: m.title,
+                                material_type: m.material_type,
+                                posted_at: m.posted_at,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                if let Ok(materials) =
+                    google_classroom::fetch_coursework_materials(&access_token, &course.course_id).await
+                {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+
+                    for m in materials {
+                        integrations_repo::upsert_classroom_material(
+                            &conn,
+                            &integrations_repo::NewClassroomMaterial {
+                                course_id: m.course_id,
+                                material_id: m.material_id,
+                                title: m.title,
+                                material_type: m.material_type,
+                                posted_at: m.posted_at,
                             },
                         )
                         .map_err(|e| e.to_string())?;
@@ -876,6 +941,115 @@ pub async fn run_google_classroom_sync(db: &Mutex<Connection>) -> Result<DataSou
         .map_err(|e| e.to_string())?
         .ok_or("google_classroom data_source row missing")?;
     Ok(to_dto(row))
+}
+
+/// "Pull Materials" — completely independent from "Pull Deadlines"
+/// (`extract_deadlines_from_classroom`) and from the general
+/// `run_google_classroom_sync`/`start_google_classroom_oauth` flow:
+/// this command touches only `classroom_courses` (+ auto-linking) and
+/// `classroom_materials`. It never writes to `classroom_coursework` or
+/// `classroom_announcements`, and it never looks at a due date,
+/// creation date, or any other timestamp to decide what to include —
+/// materials aren't time-bound the way a deadline is (a syllabus PDF
+/// posted in week 1 is exactly as relevant in week 12), so unlike
+/// `extract_deadlines_from_calendar`/`_gmail`/`_classroom`/`_notion`
+/// there is no `is_future_deadline`/`is_close_deadline`-style filter
+/// anywhere in this path — every material Classroom returns for every
+/// active course is pulled, full stop. Returns how many were pulled
+/// this run (not a running total — see `upsert_classroom_material`'s
+/// doc comment for why re-pulling an already-known material updates it
+/// in place rather than double-counting).
+#[tauri::command]
+pub async fn pull_classroom_materials(db: State<'_, Mutex<Connection>>) -> Result<i64, String> {
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_syncing(&conn, "google_classroom").map_err(|e| e.to_string())?;
+    }
+
+    let Some(mut access_token) = get_stored_access_token("google_classroom")? else {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        integrations_repo::mark_synced_error(
+            &conn,
+            "google_classroom",
+            "not connected — connect Google Classroom first",
+        )
+        .map_err(|e| e.to_string())?;
+        return Err("not connected — connect Google Classroom first".to_string());
+    };
+
+    let mut courses_result = google_classroom::fetch_courses(&access_token).await;
+    if let Err(IngestionError::AuthExpired(_)) = &courses_result {
+        access_token = refresh_oauth_token("google_classroom").await?;
+        courses_result = google_classroom::fetch_courses(&access_token).await;
+    }
+
+    let courses = match courses_result {
+        Ok(courses) => courses,
+        Err(e) => {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            integrations_repo::mark_synced_error(&conn, "google_classroom", &e.to_string())
+                .map_err(|e| e.to_string())?;
+            return Err(e.to_string());
+        }
+    };
+
+    let mut pulled = 0i64;
+    for course in &courses {
+        {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            integrations_repo::upsert_classroom_course(
+                &conn,
+                &integrations_repo::NewClassroomCourse {
+                    course_id: course.course_id.clone(),
+                    name: course.name.clone(),
+                    section: course.section.clone(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+
+            // Same smarter auto-link used by the full sync — see
+            // `find_unlinked_strict_match`'s doc comment.
+            if let Some(local_course) =
+                course_repo::find_unlinked_strict_match(&conn, &course.name).map_err(|e| e.to_string())?
+            {
+                course_repo::link_classroom_course(&conn, local_course.id, Some(&course.course_id))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        // All three material sources, none of them date-filtered.
+        let mut course_materials = Vec::new();
+        if let Ok(m) = google_classroom::fetch_coursework_materials(&access_token, &course.course_id).await {
+            course_materials.extend(m);
+        }
+        if let Ok((_coursework, m)) = google_classroom::fetch_coursework(&access_token, &course.course_id).await {
+            course_materials.extend(m);
+        }
+        if let Ok((_announcements, m)) = google_classroom::fetch_announcements(&access_token, &course.course_id).await
+        {
+            course_materials.extend(m);
+        }
+
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        for m in course_materials {
+            integrations_repo::upsert_classroom_material(
+                &conn,
+                &integrations_repo::NewClassroomMaterial {
+                    course_id: m.course_id,
+                    material_id: m.material_id,
+                    title: m.title,
+                    material_type: m.material_type,
+                    posted_at: m.posted_at,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            pulled += 1;
+        }
+    }
+
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    integrations_repo::mark_synced_ok(&conn, "google_classroom", &now_iso8601()).map_err(|e| e.to_string())?;
+    Ok(pulled)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -955,6 +1129,64 @@ pub fn list_classroom_announcements(
         .collect())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassroomMaterialDto {
+    pub material_id: String,
+    pub course_id: String,
+    pub title: String,
+    pub material_type: Option<String>,
+    pub posted_at: Option<String>,
+    pub fetched_at: String,
+    pub seen: bool,
+    pub studied: bool,
+}
+
+/// Every synced material, newest first, across every Classroom course —
+/// the "Materials" surface's one read. `seen` lets the frontend badge
+/// what's new since it was last looked at, without a separate
+/// unread-count command.
+#[tauri::command]
+pub fn list_classroom_materials(db: State<'_, Mutex<Connection>>) -> Result<Vec<ClassroomMaterialDto>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let rows = integrations_repo::list_classroom_materials(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ClassroomMaterialDto {
+            material_id: r.material_id,
+            course_id: r.course_id,
+            title: r.title,
+            material_type: r.material_type,
+            posted_at: r.posted_at,
+            fetched_at: r.fetched_at,
+            seen: r.seen,
+            studied: r.studied,
+        })
+        .collect())
+}
+
+/// Marks the given materials as seen — called once the person actually
+/// opens/expands the Materials list, not automatically on sync (see
+/// `mark_classroom_materials_seen`'s repo-level doc comment).
+#[tauri::command]
+pub fn mark_classroom_materials_seen(
+    db: State<'_, Mutex<Connection>>,
+    material_ids: Vec<String>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    integrations_repo::mark_classroom_materials_seen(&conn, &material_ids).map_err(|e| e.to_string())
+}
+
+/// Toggles the explicit "I studied this" checkbox for one material.
+#[tauri::command]
+pub fn set_classroom_material_studied(
+    db: State<'_, Mutex<Connection>>,
+    material_id: String,
+    studied: bool,
+) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    integrations_repo::set_classroom_material_studied(&conn, &material_id, studied).map_err(|e| e.to_string())
+}
+
 // --- Google Calendar ---
 //
 // Fourth Google-backed OAuth connector, added as a Notion alternative
@@ -1009,6 +1241,31 @@ pub async fn list_google_calendars() -> Result<Vec<CalendarListEntryDto>, String
         .collect())
 }
 
+/// Reads back whatever `set_google_calendar_ids` last saved — this is
+/// what makes the selection survive navigating away from Settings and
+/// back (or an app restart). Without a getter, the frontend has no way
+/// to know what's actually persisted and has to re-derive a guess from
+/// scratch every time the component remounts, which is exactly the
+/// "my selection resets when I leave the screen" bug this exists to
+/// fix. Returns `[]` if nothing has been explicitly picked yet (the
+/// "hasn't opened the picker" case `run_google_calendar_sync` already
+/// falls back to "every calendar" for).
+#[tauri::command]
+pub fn get_google_calendar_ids(db: State<'_, Mutex<Connection>>) -> Result<Vec<String>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let config = integrations_repo::get_data_source(&conn, "google_calendar")
+        .map_err(|e| e.to_string())?
+        .and_then(|row| row.config_json)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+
+    Ok(config
+        .as_ref()
+        .and_then(|v| v.get("calendar_ids"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|id| id.as_str().map(str::to_string)).collect::<Vec<_>>())
+        .unwrap_or_default())
+}
+
 /// Saves which calendar(s) to read (stored in `data_sources.config_json`
 /// as `{"calendar_ids": [...]}` — no schema migration needed, that
 /// column already exists and already has exactly this "small
@@ -1057,7 +1314,7 @@ pub async fn run_google_calendar_sync(db: &Mutex<Connection>) -> Result<DataSour
     // *and* subscribed/shared calendars, not just one). Falls back to
     // the old singular "calendar_id" key too, so anyone who picked one
     // calendar before this change keeps working without re-picking.
-    let calendar_ids: Vec<String> = {
+    let stored_calendar_ids: Option<Vec<String>> = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let config = integrations_repo::get_data_source(&conn, "google_calendar")
             .map_err(|e| e.to_string())?
@@ -1077,7 +1334,42 @@ pub async fn run_google_calendar_sync(db: &Mutex<Connection>) -> Result<DataSour
                     .and_then(|v| v.as_str())
                     .map(|id| vec![id.to_string()])
             })
-            .unwrap_or_else(|| vec!["primary".to_string()])
+    };
+
+    // No explicit selection stored yet (nobody has opened the "which
+    // calendar?" picker) — rather than silently defaulting to
+    // `primary` only, which misses every secondary/subscribed calendar
+    // (Classroom-created calendars, shared course calendars, etc. —
+    // exactly where most people's actual deadlines live), ask Google
+    // for every calendar this token can see and read all of them.
+    // Errors here are surfaced via `mark_synced_error`, not silently
+    // swallowed into a `primary`-only fallback — a swallowed error
+    // here previously looked identical to "you have no events", which
+    // is exactly the bug that prompted this comment.
+    let calendar_ids: Vec<String> = match stored_calendar_ids {
+        Some(ids) => ids,
+        None => {
+            let mut ids: Vec<String> = match google_calendar::list_calendars(&access_token).await {
+                Ok(entries) => entries.into_iter().map(|e| e.id).collect(),
+                Err(e) => {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+                    integrations_repo::mark_synced_error(
+                        &conn,
+                        "google_calendar",
+                        &format!("couldn't list calendars: {e}"),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let row = integrations_repo::get_data_source(&conn, "google_calendar")
+                        .map_err(|e| e.to_string())?
+                        .ok_or("google_calendar data_source row missing")?;
+                    return Ok(to_dto(row));
+                }
+            };
+            if ids.is_empty() {
+                ids.push("primary".to_string());
+            }
+            ids
+        }
     };
 
     // One event_id can legitimately appear on more than one calendar
@@ -1168,13 +1460,99 @@ pub fn list_calendar_events(db: State<'_, Mutex<Connection>>) -> Result<Vec<Cale
         .collect())
 }
 
+/// Shared parsing for the handful of date/time shapes this file deals
+/// with (see `is_future_deadline`'s doc comment for where each comes
+/// from): a full RFC-3339 instant, a naive local datetime with no
+/// offset (Gmail/Notion's text-heuristic dates), or a bare date
+/// (all-day calendar events — treated as running through end-of-day,
+/// same reasoning `is_future_deadline` used to have inline).
+fn parse_due_at(due_at: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(due_at) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(due_at, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(due_at, "%Y-%m-%d") {
+        return date.and_hms_opt(23, 59, 59).map(|dt| dt.and_utc());
+    }
+    None
+}
+
+/// True if `due_at` is still ahead of "now" — a genuine future
+/// deadline, not one that already happened.
+/// Unparseable values are kept rather than silently dropped — this is
+/// a "don't pull stale events" filter, not a validator; anything it
+/// can't confidently place in the past is left for the person to see.
+fn is_future_deadline(due_at: &str) -> bool {
+    match parse_due_at(due_at) {
+        Some(dt) => dt > chrono::Utc::now(),
+        None => true,
+    }
+}
+
+/// How close a calendar event's start needs to be to count as an
+/// imminent deadline for the "Pull Deadlines" click — the person's
+/// classes recur multiple times a week, so a plain future filter still
+/// surfaces every future occurrence of every recurring class, most of
+/// which are weeks out and not yet actionable. Narrowed to "starting
+/// soon" instead of every future occurrence.
+///
+/// Was 48 hours; widened to 7 days after that turned out too
+/// aggressive in practice — the Settings/Connectors sync status still
+/// correctly reports every synced future event, so a 48h "Pull
+/// Deadlines" window sitting on top of it looked like a broken pull
+/// (0 results) any time the nearest real deadline was 3+ days out,
+/// which is a completely normal thing for a deadline to be. A single
+/// `const` here, so if 7 days is still the wrong number for how far
+/// ahead someone wants to see things, it's a one-line change.
+const CLOSE_DEADLINE_WINDOW_HOURS: i64 = 24 * 7;
+
+/// True if `due_at` falls within [now, now + `CLOSE_DEADLINE_WINDOW_HOURS`]
+/// — a near-term deadline worth surfacing right now, not one that's
+/// already past (excluded by the lower bound) or still far away
+/// (excluded by the upper bound). Unparseable values are kept, same
+/// reasoning as `is_future_deadline` — this narrows what counts as
+/// "close", it doesn't validate the data.
+fn is_close_deadline(due_at: &str) -> bool {
+    match parse_due_at(due_at) {
+        Some(dt) => {
+            let now = chrono::Utc::now();
+            dt > now && dt <= now + chrono::Duration::hours(CLOSE_DEADLINE_WINDOW_HOURS)
+        }
+        None => true,
+    }
+}
+
+/// Drops later duplicates that share the same title (case/whitespace
+/// normalized) — recurring calendar events ("Robotics - B" meeting
+/// three times a week, say) all carry an identical title, and once
+/// narrowed to a 48-hour window there's rarely a reason to list the
+/// same class twice. Keeps the *soonest* occurrence of each title;
+/// input is assumed already sorted soonest-first (both call sites sort
+/// via `list_calendar_events`'s `ORDER BY starts_at`, and the DTO
+/// construction below preserves that order).
+fn dedupe_by_title(deadlines: Vec<ParsedDeadlineDto>) -> Vec<ParsedDeadlineDto> {
+    let mut seen_titles: std::collections::HashSet<String> = std::collections::HashSet::new();
+    deadlines
+        .into_iter()
+        .filter(|d| seen_titles.insert(d.title.trim().to_lowercase()))
+        .collect()
+}
+
 /// Calendar events already carry a structured `starts_at` (when Google
 /// supplied one — an all-day event's `date`-only shape still lands
 /// here as a date, just without a time component), so — like
 /// Classroom's version above — this is close to a straight mapping.
 /// Events with no `starts_at` at all are skipped, same "candidates the
 /// person can confidently date" reasoning `ParsedDeadlineDto::due_at`
-/// (non-optional) requires everywhere else.
+/// (non-optional) requires everywhere else. Narrowed to deadlines
+/// starting in the next 1-2 days (`is_close_deadline`) rather than
+/// every future one, and deduped by title (`dedupe_by_title`) — a
+/// person's calendar is commonly full of recurring classes/meetings
+/// with the same title, and without both of these a "pull deadlines"
+/// click mostly surfaces noise rather than what actually needs
+/// attention soon.
 #[tauri::command]
 pub fn extract_deadlines_from_calendar(
     db: State<'_, Mutex<Connection>>,
@@ -1182,18 +1560,26 @@ pub fn extract_deadlines_from_calendar(
     let conn = db.lock().map_err(|e| e.to_string())?;
     let rows = integrations_repo::list_calendar_events(&conn).map_err(|e| e.to_string())?;
 
-    Ok(rows
+    let deadlines: Vec<ParsedDeadlineDto> = rows
         .into_iter()
         .filter_map(|event| {
-            event.starts_at.map(|due_at| ParsedDeadlineDto {
-                title: event.title,
-                category: "academic".to_string(),
-                due_at,
-                leverage_class: "medium".to_string(),
-                notes: event.description,
+            event.starts_at.and_then(|due_at| {
+                if is_close_deadline(&due_at) {
+                    Some(ParsedDeadlineDto {
+                        title: event.title,
+                        category: "academic".to_string(),
+                        due_at,
+                        leverage_class: "medium".to_string(),
+                        notes: event.description,
+                    })
+                } else {
+                    None
+                }
             })
         })
-        .collect())
+        .collect();
+
+    Ok(dedupe_by_title(deadlines))
 }
 
 // --- Notion (§1.10) ---
@@ -1748,12 +2134,14 @@ pub fn extract_deadlines_from_gmail(db: State<'_, Mutex<Connection>>) -> Result<
                 m.subject.as_deref().unwrap_or(""),
                 m.snippet.as_deref().unwrap_or("")
             );
-            find_date_in_text(&haystack).map(|due_at| ParsedDeadlineDto {
-                title: m.subject.unwrap_or_else(|| "(no subject)".to_string()),
-                category: "other".to_string(),
-                due_at,
-                leverage_class: "medium".to_string(),
-                notes: m.snippet,
+            find_date_in_text(&haystack).and_then(|due_at| {
+                is_future_deadline(&due_at).then(|| ParsedDeadlineDto {
+                    title: m.subject.clone().unwrap_or_else(|| "(no subject)".to_string()),
+                    category: "other".to_string(),
+                    due_at,
+                    leverage_class: "medium".to_string(),
+                    notes: m.snippet.clone(),
+                })
             })
         })
         .collect())
@@ -1775,12 +2163,14 @@ pub fn extract_deadlines_from_classroom(
     Ok(rows
         .into_iter()
         .filter_map(|cw| {
-            cw.due_at.map(|due_at| ParsedDeadlineDto {
-                title: cw.title,
-                category: "academic".to_string(),
-                due_at,
-                leverage_class: "medium".to_string(),
-                notes: None,
+            cw.due_at.and_then(|due_at| {
+                is_future_deadline(&due_at).then(|| ParsedDeadlineDto {
+                    title: cw.title.clone(),
+                    category: "academic".to_string(),
+                    due_at,
+                    leverage_class: "medium".to_string(),
+                    notes: None,
+                })
             })
         })
         .collect())
@@ -1801,12 +2191,14 @@ pub fn extract_deadlines_from_notion(db: State<'_, Mutex<Connection>>) -> Result
         .into_iter()
         .filter_map(|p| {
             let title = p.title.unwrap_or_else(|| "(untitled page)".to_string());
-            find_date_in_text(&title).map(|due_at| ParsedDeadlineDto {
-                title: title.clone(),
-                category: "other".to_string(),
-                due_at,
-                leverage_class: "medium".to_string(),
-                notes: p.url,
+            find_date_in_text(&title).and_then(|due_at| {
+                is_future_deadline(&due_at).then(|| ParsedDeadlineDto {
+                    title: title.clone(),
+                    category: "other".to_string(),
+                    due_at,
+                    leverage_class: "medium".to_string(),
+                    notes: p.url.clone(),
+                })
             })
         })
         .collect())

@@ -12,13 +12,16 @@ import {
 import { useBootstrap } from '../../state/bootstrapContext';
 import { AdvancedTab } from './AdvancedTab';
 import { CareerTab } from './CareerTab';
+import { CourseDetailsPanel } from './CourseDetailsPanel';
+import { MaterialsTab } from './MaterialsTab';
 import { PullDeadlinesPanel } from './PullDeadlinesPanel';
 import styles from './Semester.module.css';
 
-type SemesterTab = 'overview' | 'career' | 'advanced';
+type SemesterTab = 'overview' | 'materials' | 'career' | 'advanced';
 
 const TABS: { id: SemesterTab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
+  { id: 'materials', label: 'Materials' },
   { id: 'career', label: 'Career' },
   { id: 'advanced', label: 'Advanced' },
 ];
@@ -37,6 +40,14 @@ interface SemesterScreenProps {
 }
 
 const emptyCourseForm = () => ({
+  code: '',
+  title: '',
+  credits: '4',
+  leverageClass: 'medium' as LeverageClass,
+});
+
+/** One row in the "Start a new semester" form's inline course list — same shape as `emptyCourseForm`, kept separate since it lives in its own array rather than a single form. */
+const emptyNewSemesterCourseRow = () => ({
   code: '',
   title: '',
   credits: '4',
@@ -71,10 +82,32 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
   const [endsOn, setEndsOn] = useState('');
   const [startError, setStartError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // The "Start a new semester" form's own inline course list —
+  // `commit_semester_setup` rejects a semester with zero courses *and*
+  // zero deadlines (onboarding.rs's validation, "Athena cannot produce
+  // a meaningful verdict with zero grounded data"), and this form
+  // collects no deadlines at all, so at least one course here is not
+  // optional decoration — without it, "Start semester" always fails.
+  const [newSemesterCourses, setNewSemesterCourses] = useState([emptyNewSemesterCourseRow()]);
 
   const [courseForm, setCourseForm] = useState(emptyCourseForm());
   const [addingCourse, setAddingCourse] = useState(false);
   const [courseError, setCourseError] = useState<string | null>(null);
+
+  // Which course's details card is open, and which of its dedicated
+  // sections (Info/Materials/Notes/Log) is currently showing — at most
+  // one course open at a time, accordion-style, so the list doesn't
+  // turn into a wall of open cards as courses accumulate; the section
+  // resets to "Info" whenever a *different* course is opened, so
+  // "Materials" from a previously-viewed course doesn't linger as the
+  // default for the next one.
+  const [expandedCourseId, setExpandedCourseId] = useState<number | null>(null);
+  const [activeCourseSection, setActiveCourseSection] = useState<'info' | 'materials' | 'notes' | 'log'>('info');
+
+  const toggleCourseExpanded = (courseId: number) => {
+    setExpandedCourseId((id) => (id === courseId ? null : courseId));
+    setActiveCourseSection('info');
+  };
 
   const [activeTab, setActiveTab] = useState<SemesterTab>('overview');
 
@@ -91,22 +124,49 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
   const courses = state?.courses ?? [];
   const deadlines = state?.deadlines ?? [];
 
+  const nonEmptyNewSemesterCourses = newSemesterCourses.filter((c) => c.code.trim() || c.title.trim());
+
+  const updateNewSemesterCourseRow = (index: number, patch: Partial<(typeof newSemesterCourses)[number]>) => {
+    setNewSemesterCourses((rows) => rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+  };
+
+  const addNewSemesterCourseRow = () => {
+    setNewSemesterCourses((rows) => [...rows, emptyNewSemesterCourseRow()]);
+  };
+
+  const removeNewSemesterCourseRow = (index: number) => {
+    setNewSemesterCourses((rows) => rows.filter((_, i) => i !== index));
+  };
+
   const handleStartSemester = async () => {
-    if (!label.trim() || !startsOn || !endsOn || starting) return;
+    if (!label.trim() || !startsOn || !endsOn || nonEmptyNewSemesterCourses.length === 0 || starting) return;
     setStarting(true);
     setStartError(null);
     try {
+      const courseInputs: CourseInput[] = nonEmptyNewSemesterCourses.map((c) => ({
+        code: c.code.trim(),
+        title: c.title.trim(),
+        credits: Number.parseInt(c.credits, 10) || 0,
+        leverage_class: c.leverageClass,
+        instructor: null,
+        target_grade: null,
+        meeting_pattern: [],
+        notes: null,
+        syllabus_text: null,
+        grading_breakdown: [],
+      }));
       await commitSemesterSetup({
         label: label.trim(),
         starts_on: startsOn,
         ends_on: endsOn,
-        courses: [],
+        courses: courseInputs,
         deadlines: [],
         is_first_run: isFirstRun,
       });
       setLabel('');
       setStartsOn('');
       setEndsOn('');
+      setNewSemesterCourses([emptyNewSemesterCourseRow()]);
       setStartingNew(false);
       if (isFirstRun) {
         await onComplete?.();
@@ -229,6 +289,81 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
                 />
               </label>
             </div>
+
+            <div className={styles.field}>
+              <span className="type-caption">
+                Courses — add at least one to start the semester (you can add more, or edit these, any time later)
+              </span>
+              {newSemesterCourses.map((row, index) => (
+                <div key={index} className={styles.repeatRow}>
+                  <div className={styles.fieldRow}>
+                    <label className={styles.field}>
+                      <span className="type-caption">Course code</span>
+                      <input
+                        className={styles.input}
+                        value={row.code}
+                        onChange={(e) => updateNewSemesterCourseRow(index, { code: e.target.value })}
+                        placeholder="e.g., CS5590"
+                      />
+                    </label>
+                    <label className={styles.field}>
+                      <span className="type-caption">Title</span>
+                      <input
+                        className={styles.input}
+                        value={row.title}
+                        onChange={(e) => updateNewSemesterCourseRow(index, { title: e.target.value })}
+                        placeholder="e.g., Statistical Machine Learning"
+                      />
+                    </label>
+                  </div>
+                  <div className={styles.fieldRow}>
+                    <label className={styles.field}>
+                      <span className="type-caption">Credits</span>
+                      <input
+                        className={styles.input}
+                        type="number"
+                        min="0"
+                        value={row.credits}
+                        onChange={(e) => updateNewSemesterCourseRow(index, { credits: e.target.value })}
+                      />
+                    </label>
+                    <label className={styles.field}>
+                      <span className="type-caption">Weight / leverage</span>
+                      <select
+                        className={styles.input}
+                        value={row.leverageClass}
+                        onChange={(e) =>
+                          updateNewSemesterCourseRow(index, { leverageClass: e.target.value as LeverageClass })
+                        }
+                      >
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                      </select>
+                    </label>
+                  </div>
+                  {newSemesterCourses.length > 1 && (
+                    <button
+                      type="button"
+                      className={styles.dangerLink}
+                      onClick={() => removeNewSemesterCourseRow(index)}
+                    >
+                      Remove course
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button type="button" className={styles.secondaryButton} onClick={addNewSemesterCourseRow}>
+                Add another course
+              </button>
+              {nonEmptyNewSemesterCourses.length === 0 && (
+                <p className="type-caption">
+                  Fill in at least one course's code or title above — notes, syllabus, and grading breakdown can all
+                  be added later from the course list.
+                </p>
+              )}
+            </div>
+
             {startError && <p className={`${styles.error} type-caption`}>{startError}</p>}
             <div className={styles.actions}>
               {!isFirstRun && currentSemester && (
@@ -240,7 +375,9 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
                 type="button"
                 className={styles.primaryButton}
                 onClick={handleStartSemester}
-                disabled={!label.trim() || !startsOn || !endsOn || starting}
+                disabled={
+                  !label.trim() || !startsOn || !endsOn || nonEmptyNewSemesterCourses.length === 0 || starting
+                }
               >
                 {starting ? 'Starting…' : 'Start semester'}
               </button>
@@ -273,6 +410,8 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
           </button>
         ))}
       </div>
+
+      {activeTab === 'materials' && <MaterialsTab />}
 
       {activeTab === 'career' && <CareerTab deadlines={deadlines} onAdded={refresh} />}
 
@@ -357,23 +496,68 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
         {courses.length > 0 && (
           <div className={styles.list}>
             {courses.map((c) => (
-              <div key={c.id}>
+              <Card key={c.id} className={styles.courseCard}>
                 <div className={styles.row}>
                   <div className={styles.rowMeta}>
-                    <span className={`${styles.rowTitle} type-body`}>
-                      {c.code} — {c.title}
+                    <button
+                      type="button"
+                      className={styles.linkButton}
+                      onClick={() => toggleCourseExpanded(c.id)}
+                    >
+                      <span className={`${styles.rowTitle} type-body`}>
+                        {c.code} — {c.title}
+                      </span>
+                    </button>
+                    <span className={`${styles.rowDetail} type-caption`}>
+                      {c.credits} credits · {c.leverage_class} leverage
+                      {c.classroom_course_id ? ' · Linked to Classroom' : ''}
                     </span>
-                    <span className={`${styles.rowDetail} type-caption`}>{c.credits} credits</span>
                   </div>
-                  <button
-                    type="button"
-                    className={styles.dangerLink}
-                    onClick={() => startDeleteCourse(c.id)}
-                    disabled={confirmingDeleteCourseId === c.id}
-                  >
-                    Delete
-                  </button>
+                  <div className={styles.actions}>
+                    <button type="button" className={styles.linkButton} onClick={() => toggleCourseExpanded(c.id)}>
+                      {expandedCourseId === c.id ? 'Collapse' : 'Expand'}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.dangerLink}
+                      onClick={() => startDeleteCourse(c.id)}
+                      disabled={confirmingDeleteCourseId === c.id}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
+
+                {expandedCourseId === c.id && (
+                  <div className={styles.courseCardBody}>
+                    <div className={styles.courseSectionNav}>
+                      {(
+                        [
+                          ['info', 'Info'],
+                          ['materials', 'Materials'],
+                          ['notes', 'Notes'],
+                          ['log', 'Log'],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          className={styles.courseSectionTab}
+                          data-active={activeCourseSection === id}
+                          onClick={() => setActiveCourseSection(id)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <CourseDetailsPanel
+                      styles={styles}
+                      course={c}
+                      section={activeCourseSection}
+                      onChanged={refresh}
+                    />
+                  </div>
+                )}
 
                 {confirmingDeleteCourseId === c.id && (
                   <div className={styles.confirmRow}>
@@ -410,7 +594,7 @@ export default function Semester({ mode = 'standalone', onComplete }: SemesterSc
                     </div>
                   </div>
                 )}
-              </div>
+              </Card>
             ))}
           </div>
         )}

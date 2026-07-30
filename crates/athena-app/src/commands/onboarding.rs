@@ -13,7 +13,7 @@ use athena_data::repositories::course::{GradingComponent, MeetingSlot, NewCourse
 use athena_data::repositories::deadline::NewDeadline;
 use athena_data::repositories::disruption::NewDisruption;
 use athena_data::repositories::profile::NewProfile;
-use athena_data::repositories::{course, deadline, disruption, event_log, profile, semester};
+use athena_data::repositories::{course, course_log, deadline, disruption, event_log, profile, semester};
 use rusqlite::Connection;
 use serde::Deserialize;
 use tauri::State;
@@ -294,6 +294,69 @@ pub fn delete_course(db: State<'_, Mutex<Connection>>, course_id: i64) -> Result
         course_deleted,
         deadlines_deleted,
     })
+}
+
+/// Overwrites a course's standing `notes` field (V12) — the one thing
+/// the Semester screen's quick "Add course" form deliberately doesn't
+/// collect up front (semester workflow reform brief, Part 1: a fast
+/// add-course action, not the old wizard's full course-context step).
+/// This is where that context gets added after the fact instead.
+#[tauri::command]
+pub fn update_course_notes(
+    db: State<'_, Mutex<Connection>>,
+    course_id: i64,
+    notes: Option<String>,
+) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course::update_notes(&conn, course_id, notes.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Links (or, passing `None`, unlinks) a local course to a Google
+/// Classroom course — see `V15__classroom_material_linking.sql` for
+/// why this is an explicit person action rather than an automatic
+/// name match. Once linked, that course's materials (fetched from
+/// Classroom by `run_google_classroom_sync`, matched here purely by
+/// `classroom_course_id` equality) show up directly under it instead
+/// of only in the standalone Materials tab.
+#[tauri::command]
+pub fn link_course_to_classroom(
+    db: State<'_, Mutex<Connection>>,
+    course_id: i64,
+    classroom_course_id: Option<String>,
+) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course::link_classroom_course(&conn, course_id, classroom_course_id.as_deref()).map_err(|e| e.to_string())
+}
+
+/// Appends one entry to a course's log (V13__course_logs.sql — see
+/// that migration's doc comment for why this is a separate,
+/// append-only stream rather than another edit to `notes`).
+#[tauri::command]
+pub fn add_course_log(db: State<'_, Mutex<Connection>>, course_id: i64, body: String) -> Result<i64, String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err("Log entry can't be empty.".to_string());
+    }
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course_log::insert_log(&conn, course_id, trimmed).map_err(|e| e.to_string())
+}
+
+/// Every log entry for one course, newest first.
+#[tauri::command]
+pub fn list_course_logs(
+    db: State<'_, Mutex<Connection>>,
+    course_id: i64,
+) -> Result<Vec<course_log::CourseLogRow>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course_log::list_by_course(&conn, course_id).map_err(|e| e.to_string())
+}
+
+/// Removes one log entry. `true` if it existed — same
+/// idempotent-not-fussy contract every other delete command here uses.
+#[tauri::command]
+pub fn delete_course_log(db: State<'_, Mutex<Connection>>, log_id: i64) -> Result<bool, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    course_log::delete_log(&conn, log_id).map_err(|e| e.to_string())
 }
 
 /// One normalized deadline candidate, produced client-side from a

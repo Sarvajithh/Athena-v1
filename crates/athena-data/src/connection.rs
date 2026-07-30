@@ -65,8 +65,8 @@ mod tests {
             .expect("query refinery_schema_history");
         assert_eq!(
             applied,
-            12,
-            "exactly 12 migrations should be recorded as applied"
+            15,
+            "exactly 15 migrations should be recorded as applied"
         );
 
         // MT-6 / Acceptance Criterion #4 (Objective 4, extended by V4's

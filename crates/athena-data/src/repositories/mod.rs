@@ -12,6 +12,7 @@
 
 pub mod ask_athena_history;
 pub mod course;
+pub mod course_log;
 pub mod deadline;
 pub mod decision;
 pub mod disruption;

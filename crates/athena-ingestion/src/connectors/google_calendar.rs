@@ -35,7 +35,17 @@ use crate::error::IngestionError;
 
 pub const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-pub const SCOPE: &str = "https://www.googleapis.com/auth/calendar.events.readonly";
+/// NOTE: was `calendar.events.readonly` — changed to `calendar.readonly`
+/// because `calendarList.list` (used by `list_calendars`, below)
+/// requires `calendar.readonly`/`calendar`/`calendar.calendarlist[.readonly]`
+/// per Google's own scope table; `events.readonly` does not grant it
+/// (a 403 there was being silently swallowed and masked as "no events
+/// found"). `calendar.readonly` is still read-only — no write/delete
+/// capability gained — just broader than events alone.
+/// Anyone who connected under the old scope needs to disconnect and
+/// reconnect once to pick up the wider consent; a previously issued
+/// token doesn't retroactively gain scope.
+pub const SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalendarEvent {
@@ -104,10 +114,9 @@ struct CalendarListResponse {
     items: Option<Vec<CalendarListEntry>>,
 }
 
-/// Every calendar the token can see (read-only — same
-/// `calendar.events.readonly` scope already covers `calendarList.list`,
-/// no extra scope needed). Used once, right after connecting, to
-/// populate the "which calendar?" picker — never called on every sync.
+/// Every calendar the token can see (read-only). Requires the
+/// `calendar.readonly` scope (see `SCOPE`'s doc comment for why —
+/// `calendar.events.readonly` alone does not grant `calendarList.list`).
 pub async fn list_calendars(access_token: &str) -> Result<Vec<CalendarListEntry>, IngestionError> {
     let client = build_client(access_token)?;
     let resp = client

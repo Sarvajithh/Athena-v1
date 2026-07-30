@@ -88,6 +88,8 @@ export interface CourseRow {
   notes: string | null;
   syllabus_text: string | null;
   grading_breakdown: GradingComponent[];
+  /** V15 — linked Google Classroom course, if any. `null` until `linkCourseToClassroom` is called. */
+  classroom_course_id: string | null;
 }
 
 export interface DeadlineRow {
@@ -399,6 +401,34 @@ export async function deleteCourse(courseId: number): Promise<DeleteCourseResult
   return invoke<DeleteCourseResult>("delete_course", { courseId });
 }
 
+/** Overwrites a course's standing `notes` field. Pass `null` to clear it. */
+export async function updateCourseNotes(courseId: number, notes: string | null): Promise<boolean> {
+  return invoke<boolean>("update_course_notes", { courseId, notes });
+}
+
+/** Mirrors `course_log::CourseLogRow` (`athena-data`). */
+export interface CourseLogRow {
+  id: number;
+  course_id: number;
+  body: string;
+  created_at: string;
+}
+
+/** Appends one entry to a course's running log (V13__course_logs.sql). */
+export async function addCourseLog(courseId: number, body: string): Promise<number> {
+  return invoke<number>("add_course_log", { courseId, body });
+}
+
+/** Every log entry for one course, newest first. */
+export async function listCourseLogs(courseId: number): Promise<CourseLogRow[]> {
+  return invoke<CourseLogRow[]>("list_course_logs", { courseId });
+}
+
+/** Removes one log entry. `true` if it existed. */
+export async function deleteCourseLog(logId: number): Promise<boolean> {
+  return invoke<boolean>("delete_course_log", { logId });
+}
+
 export interface DeadlineCandidateInput {
   course_id: number | null;
   title: string;
@@ -636,6 +666,51 @@ export async function listClassroomAnnouncements(): Promise<ClassroomAnnouncemen
   return invoke<ClassroomAnnouncementDto[]>("list_classroom_announcements");
 }
 
+/** Mirrors `ClassroomMaterialDto` (`commands::integrations`). Reference content — slides, readings, links, files — posted outside of an assignment (Classroom's `courseWorkMaterials`, distinct from coursework/announcements). */
+export interface ClassroomMaterialDto {
+  material_id: string;
+  course_id: string;
+  title: string;
+  material_type: string | null;
+  posted_at: string | null;
+  fetched_at: string;
+  /** `false` until `markClassroomMaterialsSeen` has been called for this material. */
+  seen: boolean;
+  /** Explicit, person-set "I studied this" — separate from `seen`. */
+  studied: boolean;
+}
+
+/** Every synced material across every Classroom course, newest first. */
+export async function listClassroomMaterials(): Promise<ClassroomMaterialDto[]> {
+  return invoke<ClassroomMaterialDto[]>("list_classroom_materials");
+}
+
+/**
+ * "Pull Materials" — completely independent from "Pull Deadlines."
+ * Fetches every material for every active Classroom course with no
+ * date/timeframe filtering of any kind (materials aren't time-bound
+ * the way a deadline is). Returns how many materials were pulled this
+ * run.
+ */
+export async function pullClassroomMaterials(): Promise<number> {
+  return invoke<number>("pull_classroom_materials");
+}
+
+/** Marks materials as seen, clearing their "new" badge. Call once the person has actually looked at them, not on every poll. */
+export async function markClassroomMaterialsSeen(materialIds: string[]): Promise<void> {
+  return invoke<void>("mark_classroom_materials_seen", { materialIds });
+}
+
+/** Toggles the explicit "I studied this" checkbox for one material. */
+export async function setClassroomMaterialStudied(materialId: string, studied: boolean): Promise<boolean> {
+  return invoke<boolean>("set_classroom_material_studied", { materialId, studied });
+}
+
+/** Links (or, passing `null`, unlinks) a local course to a Google Classroom course, so that course's materials show up directly under it. */
+export async function linkCourseToClassroom(courseId: number, classroomCourseId: string | null): Promise<boolean> {
+  return invoke<boolean>("link_course_to_classroom", { courseId, classroomCourseId });
+}
+
 // --- Google Calendar — reuses the shared Google OAuth client/token endpoint as Gmail/Classroom ---
 
 /** Opens the browser for Calendar consent and runs the first sync once granted. */
@@ -656,6 +731,11 @@ export interface CalendarListEntryDto {
 /** Every calendar the connected token can see — populates the "which calendar?" picker. */
 export async function listGoogleCalendars(): Promise<CalendarListEntryDto[]> {
   return invoke<CalendarListEntryDto[]>("list_google_calendars");
+}
+
+/** Reads back the persisted calendar selection — call this on mount so the picker reflects what's actually saved, not a guess. */
+export async function getGoogleCalendarIds(): Promise<string[]> {
+  return invoke<string[]>("get_google_calendar_ids");
 }
 
 /** Saves which calendar(s) to read (multi-select) and re-syncs immediately. */

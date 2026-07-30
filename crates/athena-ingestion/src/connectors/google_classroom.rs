@@ -1,10 +1,16 @@
 //! Google Classroom connector (07_INTEGRATIONS.md §1.9, OAuth
 //! amendment). Read-only sync of courses, coursework (assignments + due
-//! dates), and announcements for courses the authenticated user is
-//! already enrolled in/teaches — never a domain-wide roster scan, never
-//! a grade write, never a submission action. Scopes:
-//! `.../auth/classroom.courses.readonly`,
+//! dates), announcements, and course materials for courses the
+//! authenticated user is already enrolled in/teaches — never a
+//! domain-wide roster scan, never a grade write, never a submission
+//! action. Materials come from three places, not just Classroom's
+//! dedicated `courseWorkMaterials` resource: a teacher can also attach
+//! files/links directly to an assignment or an announcement instead of
+//! posting them separately, so `fetch_coursework`/`fetch_announcements`
+//! extract those attachments too (`materials_from_attachments`).
+//! Scopes: `.../auth/classroom.courses.readonly`,
 //! `.../auth/classroom.coursework.me.readonly`,
+//! `.../auth/classroom.courseworkmaterials.readonly`,
 //! `.../auth/classroom.announcements.readonly`.
 
 use serde::Deserialize;
@@ -13,8 +19,17 @@ use crate::error::IngestionError;
 
 pub const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// NOTE: `classroom.courseworkmaterials.readonly` was added for
+/// `fetch_coursework_materials` (materials aren't covered by
+/// `classroom.coursework.me.readonly` — that scope is for coursework
+/// specifically, materials are Classroom's own separate resource with
+/// its own scope). Same caveat as `google_calendar::SCOPE`'s doc
+/// comment: anyone who connected Classroom before this change needs to
+/// disconnect and reconnect once — a previously issued token doesn't
+/// retroactively gain scope.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/classroom.courses.readonly \
 https://www.googleapis.com/auth/classroom.coursework.me.readonly \
+https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly \
 https://www.googleapis.com/auth/classroom.announcements.readonly";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +53,22 @@ pub struct ClassroomAnnouncement {
     pub course_id: String,
     pub announcement_id: String,
     pub text: Option<String>,
+    pub posted_at: Option<String>,
+}
+
+/// One item from Classroom's `courseWorkMaterials` resource — reference
+/// content (slides, readings, links, files) a teacher posts that isn't
+/// an assignment (no due date, nothing to submit) and isn't a feed-style
+/// announcement. `material_type` is a best-effort label taken from
+/// whichever attachment kind Classroom's `materials[]` array reports
+/// first (`driveFile`, `link`, `youTubeVideo`, `form`) — informational
+/// only, never parsed further.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassroomMaterial {
+    pub course_id: String,
+    pub material_id: String,
+    pub title: String,
+    pub material_type: Option<String>,
     pub posted_at: Option<String>,
 }
 
@@ -66,6 +97,9 @@ struct CourseWorkDto {
     #[serde(rename = "dueTime")]
     due_time: Option<DueTime>,
     state: Option<String>,
+    #[serde(rename = "creationTime")]
+    creation_time: Option<String>,
+    materials: Option<Vec<MaterialAttachmentDto>>,
 }
 #[derive(Debug, Deserialize)]
 struct DueDate {
@@ -89,6 +123,112 @@ struct AnnouncementDto {
     text: Option<String>,
     #[serde(rename = "creationTime")]
     creation_time: Option<String>,
+    materials: Option<Vec<MaterialAttachmentDto>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CourseWorkMaterialsResponse {
+    #[serde(rename = "courseWorkMaterial")]
+    course_work_material: Option<Vec<CourseWorkMaterialDto>>,
+}
+#[derive(Debug, Deserialize)]
+struct CourseWorkMaterialDto {
+    id: String,
+    title: String,
+    #[serde(rename = "creationTime")]
+    creation_time: Option<String>,
+    materials: Option<Vec<MaterialAttachmentDto>>,
+}
+/// Only the attachment *kind* is read (for `material_type`) — never
+/// the file/link contents themselves, matching this connector's
+/// read-only, metadata-only discipline throughout. Each variant is a
+/// distinct JSON key Classroom sets depending on what was attached;
+/// `#[serde(default)]` on every field means an unrecognized/future
+/// attachment shape just parses to "no kind identified" rather than
+/// failing the whole response.
+#[derive(Debug, Deserialize)]
+struct MaterialAttachmentDto {
+    #[serde(rename = "driveFile", default)]
+    drive_file: Option<serde_json::Value>,
+    #[serde(rename = "youTubeVideo", default)]
+    you_tube_video: Option<serde_json::Value>,
+    #[serde(default)]
+    link: Option<serde_json::Value>,
+    #[serde(default)]
+    form: Option<serde_json::Value>,
+}
+
+impl MaterialAttachmentDto {
+    fn kind(&self) -> Option<&'static str> {
+        if self.drive_file.is_some() {
+            Some("drive_file")
+        } else if self.you_tube_video.is_some() {
+            Some("youtube")
+        } else if self.link.is_some() {
+            Some("link")
+        } else if self.form.is_some() {
+            Some("form")
+        } else {
+            None
+        }
+    }
+
+    /// Best-effort per-attachment display name, read straight from
+    /// whichever variant's own JSON (`driveFile`/`link`/`youTubeVideo`/
+    /// `form` objects all commonly carry a `title` field in Classroom's
+    /// API) rather than a separate typed struct per variant — kept
+    /// loose the same way `kind()` is, so an unrecognized/future shape
+    /// just yields `None` (caller falls back to the parent item's own
+    /// title) instead of failing the whole response.
+    fn title(&self) -> Option<String> {
+        let value = self
+            .drive_file
+            .as_ref()
+            .or(self.you_tube_video.as_ref())
+            .or(self.link.as_ref())
+            .or(self.form.as_ref())?;
+        value.get("title").and_then(|v| v.as_str()).map(str::to_string)
+    }
+}
+
+/// Turns one coursework/announcement item's `materials[]` attachments
+/// into standalone `ClassroomMaterial` rows — this is the "materials
+/// aren't only in the dedicated courseWorkMaterials section" fix:
+/// a teacher who attaches a reading directly to an assignment or an
+/// announcement, instead of posting it as separate course material,
+/// still has that reading show up in the Materials list.
+///
+/// Attachments don't carry their own global ID the way `courseWork`/
+/// `courseWorkMaterial`/`announcements` items do, so `material_id` is
+/// synthesized as `{parent_kind}:{parent_id}:{index}` — stable across
+/// re-syncs as long as Classroom doesn't reorder a given item's
+/// attachment list (if it ever does, the practical effect is one
+/// upsert landing as a new row instead of updating in place, which
+/// just means that attachment's `seen`/`studied` state resets — not
+/// data loss, and not expected to happen in practice).
+fn materials_from_attachments(
+    course_id: &str,
+    parent_kind: &str,
+    parent_id: &str,
+    parent_title: &str,
+    posted_at: &Option<String>,
+    attachments: &Option<Vec<MaterialAttachmentDto>>,
+) -> Vec<ClassroomMaterial> {
+    attachments
+        .as_ref()
+        .map(|list| {
+            list.iter()
+                .enumerate()
+                .map(|(index, attachment)| ClassroomMaterial {
+                    course_id: course_id.to_string(),
+                    material_id: format!("{parent_kind}:{parent_id}:{index}"),
+                    title: attachment.title().unwrap_or_else(|| parent_title.to_string()),
+                    material_type: attachment.kind().map(str::to_string),
+                    posted_at: posted_at.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn build_client(access_token: &str) -> Result<reqwest::Client, IngestionError> {
@@ -160,14 +300,17 @@ pub async fn fetch_courses(access_token: &str) -> Result<Vec<ClassroomCourse>, I
 }
 
 /// Assignments + due dates for one course (§1.9's "Assignments, Due
-/// dates"). The caller (`athena-app`) iterates every course from
-/// `fetch_courses` independently — one course's coursework failing does
-/// not abort sibling courses, same per-item degrade-path precedent as
-/// GitHub's per-repo sync (§1.3/§5).
+/// dates"), plus any materials attached directly to those assignments
+/// (see `materials_from_attachments`'s doc comment — materials aren't
+/// only posted through the dedicated courseWorkMaterials resource).
+/// The caller (`athena-app`) iterates every course from `fetch_courses`
+/// independently — one course's coursework failing does not abort
+/// sibling courses, same per-item degrade-path precedent as GitHub's
+/// per-repo sync (§1.3/§5).
 pub async fn fetch_coursework(
     access_token: &str,
     course_id: &str,
-) -> Result<Vec<ClassroomCoursework>, IngestionError> {
+) -> Result<(Vec<ClassroomCoursework>, Vec<ClassroomMaterial>), IngestionError> {
     let client = build_client(access_token)?;
     let url = format!("https://classroom.googleapis.com/v1/courses/{course_id}/courseWork?pageSize=50");
     let resp = client
@@ -190,9 +333,21 @@ pub async fn fetch_coursework(
         .json()
         .await
         .map_err(|e| IngestionError::Parse(format!("classroom coursework payload: {e}")))?;
-    Ok(parsed
-        .course_work
-        .unwrap_or_default()
+    let items = parsed.course_work.unwrap_or_default();
+
+    let mut materials = Vec::new();
+    for c in &items {
+        materials.extend(materials_from_attachments(
+            course_id,
+            "coursework",
+            &c.id,
+            &c.title,
+            &c.creation_time,
+            &c.materials,
+        ));
+    }
+
+    let coursework = items
         .into_iter()
         .map(|c| ClassroomCoursework {
             course_id: course_id.to_string(),
@@ -201,14 +356,18 @@ pub async fn fetch_coursework(
             due_at: format_due(&c.due_date, &c.due_time),
             state: c.state,
         })
-        .collect())
+        .collect();
+
+    Ok((coursework, materials))
 }
 
-/// Announcements for one course (§1.9's "Announcements").
+/// Announcements for one course (§1.9's "Announcements"), plus any
+/// materials attached directly to those announcements (same reasoning
+/// as `fetch_coursework`'s doc comment).
 pub async fn fetch_announcements(
     access_token: &str,
     course_id: &str,
-) -> Result<Vec<ClassroomAnnouncement>, IngestionError> {
+) -> Result<(Vec<ClassroomAnnouncement>, Vec<ClassroomMaterial>), IngestionError> {
     let client = build_client(access_token)?;
     let url = format!("https://classroom.googleapis.com/v1/courses/{course_id}/announcements?pageSize=50");
     let resp = client
@@ -231,15 +390,92 @@ pub async fn fetch_announcements(
         .json()
         .await
         .map_err(|e| IngestionError::Parse(format!("classroom announcements payload: {e}")))?;
-    Ok(parsed
-        .announcements
-        .unwrap_or_default()
+    let items = parsed.announcements.unwrap_or_default();
+
+    let mut materials = Vec::new();
+    for a in &items {
+        // Announcements have no `title`, only free-text `text` — fall
+        // back to a generic label rather than an empty string when an
+        // attachment itself has no title to borrow either.
+        let fallback_title = a
+            .text
+            .as_deref()
+            .map(|t| t.chars().take(60).collect::<String>())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "Announcement attachment".to_string());
+        materials.extend(materials_from_attachments(
+            course_id,
+            "announcement",
+            &a.id,
+            &fallback_title,
+            &a.creation_time,
+            &a.materials,
+        ));
+    }
+
+    let announcements = items
         .into_iter()
         .map(|a| ClassroomAnnouncement {
             course_id: course_id.to_string(),
             announcement_id: a.id,
             text: a.text,
             posted_at: a.creation_time,
+        })
+        .collect();
+
+    Ok((announcements, materials))
+}
+
+/// Reference materials for one course (slides, readings, links, files
+/// posted outside of an assignment — Classroom's `courseWorkMaterials`
+/// resource, distinct from `courseWork`/announcements). Same per-course,
+/// per-item degrade-path precedent as `fetch_coursework`/
+/// `fetch_announcements` — the caller iterates every course
+/// independently, one course's materials failing doesn't abort others.
+pub async fn fetch_coursework_materials(
+    access_token: &str,
+    course_id: &str,
+) -> Result<Vec<ClassroomMaterial>, IngestionError> {
+    let client = build_client(access_token)?;
+    let url =
+        format!("https://classroom.googleapis.com/v1/courses/{course_id}/courseWorkMaterials?pageSize=50");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| IngestionError::Network(format!("classroom materials: {e}")))?;
+
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(IngestionError::AuthExpired("classroom access token rejected".into()));
+    }
+    if !resp.status().is_success() {
+        return Err(IngestionError::Network(format!(
+            "classroom materials returned {}",
+            resp.status()
+        )));
+    }
+
+    let parsed: CourseWorkMaterialsResponse = resp
+        .json()
+        .await
+        .map_err(|e| IngestionError::Parse(format!("classroom materials payload: {e}")))?;
+    Ok(parsed
+        .course_work_material
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            let material_type = m
+                .materials
+                .as_ref()
+                .and_then(|list| list.iter().find_map(MaterialAttachmentDto::kind))
+                .map(str::to_string);
+            ClassroomMaterial {
+                course_id: course_id.to_string(),
+                material_id: m.id,
+                title: m.title,
+                material_type,
+                posted_at: m.creation_time,
+            }
         })
         .collect())
 }

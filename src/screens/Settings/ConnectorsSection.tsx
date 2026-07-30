@@ -8,6 +8,7 @@ import {
   getLatestCodeforcesSnapshot,
   getLatestLeetCodeSnapshot,
   linkGithubRepo,
+  getGoogleCalendarIds,
   listCalendarEvents,
   listClassroomAnnouncements,
   listClassroomCourses,
@@ -574,15 +575,17 @@ function CalendarPanel({
 
   const refreshEvents = () => listCalendarEvents().then(setEvents).catch(() => undefined);
 
+  // Loads whatever's actually saved (`data_sources.config_json`) so
+  // the checkboxes reflect the real persisted selection, not a guess
+  // re-derived from scratch — this is the fix for "my selection resets
+  // when I leave the screen and come back": that used to only look at
+  // in-memory state, which is always empty on a fresh mount.
+  const refreshSelectedCalendarIds = () => getGoogleCalendarIds().then(setSelectedCalendarIds).catch(() => undefined);
+
   const refreshCalendarList = async () => {
     try {
       const list = await listGoogleCalendars();
       setCalendars(list);
-      setSelectedCalendarIds((current) => {
-        if (current.length > 0) return current;
-        const primary = list.find((c) => c.primary);
-        return primary ? [primary.id] : [];
-      });
     } catch {
       // Not connected yet, or the fetch failed — leave the picker
       // empty; the "Connect Calendar" flow surfaces its own error.
@@ -591,7 +594,10 @@ function CalendarPanel({
 
   useEffect(() => {
     if (source?.status === 'ok') refreshEvents();
-    if (source?.has_credential) void refreshCalendarList();
+    if (source?.has_credential) {
+      void refreshCalendarList();
+      void refreshSelectedCalendarIds();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source?.last_synced_at, source?.has_credential]);
 
@@ -603,6 +609,7 @@ function CalendarPanel({
       onSynced();
       await refreshEvents();
       await refreshCalendarList();
+      await refreshSelectedCalendarIds();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

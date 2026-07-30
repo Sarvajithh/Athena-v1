@@ -576,6 +576,105 @@ pub fn list_classroom_announcements(conn: &Connection) -> Result<Vec<ClassroomAn
 }
 
 // ---------------------------------------------------------------------
+// classroom_materials (V14) — see that migration's doc comment for why
+// `seen` exists and why `upsert_classroom_material` never touches it.
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct NewClassroomMaterial {
+    pub course_id: String,
+    pub material_id: String,
+    pub title: String,
+    pub material_type: Option<String>,
+    pub posted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClassroomMaterialRow {
+    pub material_id: String,
+    pub course_id: String,
+    pub title: String,
+    pub material_type: Option<String>,
+    pub posted_at: Option<String>,
+    pub fetched_at: String,
+    pub seen: bool,
+    /// V15 — explicit, person-set "I went through this," separate from
+    /// `seen` (automatic, "this tab has been opened since this
+    /// landed"). See that migration's doc comment.
+    pub studied: bool,
+}
+
+fn row_to_classroom_material(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClassroomMaterialRow> {
+    Ok(ClassroomMaterialRow {
+        material_id: row.get(0)?,
+        course_id: row.get(1)?,
+        title: row.get(2)?,
+        material_type: row.get(3)?,
+        posted_at: row.get(4)?,
+        fetched_at: row.get(5)?,
+        seen: row.get::<_, i64>(6)? != 0,
+        studied: row.get::<_, i64>(7)? != 0,
+    })
+}
+
+/// Deliberately does NOT set `seen` in its `ON CONFLICT ... DO UPDATE`
+/// clause — a re-sync finding an already-known `material_id` must
+/// leave that row's `seen` value exactly as the person left it. A
+/// brand new `material_id` falls through to the column's `DEFAULT 0`
+/// on the `INSERT` side, so new material always lands unseen.
+pub fn upsert_classroom_material(conn: &Connection, new: &NewClassroomMaterial) -> Result<(), DataError> {
+    conn.execute(
+        "INSERT INTO classroom_materials (material_id, course_id, title, material_type, posted_at, fetched_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
+         ON CONFLICT(material_id) DO UPDATE SET \
+         course_id = excluded.course_id, title = excluded.title, material_type = excluded.material_type, \
+         posted_at = excluded.posted_at, fetched_at = excluded.fetched_at",
+        params![new.course_id, new.material_id, new.title, new.material_type, new.posted_at],
+    )?;
+    Ok(())
+}
+
+pub fn list_classroom_materials(conn: &Connection) -> Result<Vec<ClassroomMaterialRow>, DataError> {
+    let mut stmt = conn.prepare(
+        "SELECT material_id, course_id, title, material_type, posted_at, fetched_at, seen, studied \
+         FROM classroom_materials ORDER BY posted_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_classroom_material)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Sets (or clears) the explicit "I studied this" flag for one
+/// material — a person-driven toggle, never touched by sync/upsert.
+/// `true` if the material existed.
+pub fn set_classroom_material_studied(
+    conn: &Connection,
+    material_id: &str,
+    studied: bool,
+) -> Result<bool, DataError> {
+    let affected = conn.execute(
+        "UPDATE classroom_materials SET studied = ?1 WHERE material_id = ?2",
+        params![studied as i64, material_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Flips `seen` to 1 for the given material IDs — called once the
+/// person has actually looked at them (Materials tab open/expand),
+/// not automatically on every sync (an unread badge that clears itself
+/// before anyone reads it isn't doing its job).
+pub fn mark_classroom_materials_seen(conn: &Connection, material_ids: &[String]) -> Result<(), DataError> {
+    for id in material_ids {
+        conn.execute(
+            "UPDATE classroom_materials SET seen = 1 WHERE material_id = ?1",
+            params![id],
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
 // notion_pages (§1.10)
 // ---------------------------------------------------------------------
 
