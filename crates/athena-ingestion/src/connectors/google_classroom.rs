@@ -173,20 +173,29 @@ impl MaterialAttachmentDto {
         }
     }
 
-    /// Best-effort per-attachment display name, read straight from
-    /// whichever variant's own JSON (`driveFile`/`link`/`youTubeVideo`/
-    /// `form` objects all commonly carry a `title` field in Classroom's
-    /// API) rather than a separate typed struct per variant — kept
-    /// loose the same way `kind()` is, so an unrecognized/future shape
-    /// just yields `None` (caller falls back to the parent item's own
-    /// title) instead of failing the whole response.
+    /// Best-effort per-attachment display name. For `link`/`youTubeVideo`/
+    /// `form`, Classroom puts `title` directly on that attachment's own
+    /// object. `driveFile` is the odd one out: Classroom wraps the actual
+    /// file info one level deeper — `{ "driveFile": { "driveFile": { "id",
+    /// "title", ... }, "shareMode": ... } }` — so reading `title` straight
+    /// off the outer `driveFile` object (as an earlier version of this
+    /// function did) always misses, silently falling back to the parent
+    /// coursework/announcement's own title/text instead of the actual
+    /// attached file's name. Since most real Classroom materials *are*
+    /// Drive files, that fallback was the main cause of materials showing
+    /// up with a generic or truncated announcement-text title instead of
+    /// their real one. Kept loose the same way `kind()` is: an
+    /// unrecognized/future shape just yields `None` (caller falls back to
+    /// the parent item's own title) instead of failing the whole response.
     fn title(&self) -> Option<String> {
-        let value = self
-            .drive_file
-            .as_ref()
-            .or(self.you_tube_video.as_ref())
-            .or(self.link.as_ref())
-            .or(self.form.as_ref())?;
+        if let Some(drive_file) = &self.drive_file {
+            return drive_file
+                .get("driveFile")
+                .and_then(|inner| inner.get("title"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+        }
+        let value = self.you_tube_video.as_ref().or(self.link.as_ref()).or(self.form.as_ref())?;
         value.get("title").and_then(|v| v.as_str()).map(str::to_string)
     }
 }
@@ -206,6 +215,29 @@ impl MaterialAttachmentDto {
 /// upsert landing as a new row instead of updating in place, which
 /// just means that attachment's `seen`/`studied` state resets — not
 /// data loss, and not expected to happen in practice).
+/// Turns one coursework/announcement item's `materials[]` attachments
+/// into standalone `ClassroomMaterial` rows — this is the "materials
+/// aren't only in the dedicated courseWorkMaterials section" fix:
+/// a teacher who attaches a reading directly to an assignment or an
+/// announcement, instead of posting it as separate course material,
+/// still has that reading show up in the Materials list.
+///
+/// Attachments don't carry their own global ID the way `courseWork`/
+/// `courseWorkMaterial`/`announcements` items do, so `material_id` is
+/// synthesized as `{course_id}:{parent_kind}:{parent_id}:{index}` —
+/// `course_id` is included specifically so that two attachments in two
+/// different courses can never collide even in the (rare, but not
+/// impossible — some Classroom test/sandbox tenants issue small,
+/// non-globally-unique resource ids) case their `parent_id`s happen to
+/// coincide; a same-primary-key collision in `classroom_materials`
+/// (`material_id TEXT PRIMARY KEY`) silently overwrites one material
+/// with another on upsert, which is exactly the "fewer materials show
+/// up than were pulled" symptom this guards against. Otherwise stable
+/// across re-syncs as long as Classroom doesn't reorder a given item's
+/// attachment list (if it ever does, the practical effect is one
+/// upsert landing as a new row instead of updating in place, which
+/// just means that attachment's `seen`/`studied` state resets — not
+/// data loss, and not expected to happen in practice).
 fn materials_from_attachments(
     course_id: &str,
     parent_kind: &str,
@@ -221,7 +253,7 @@ fn materials_from_attachments(
                 .enumerate()
                 .map(|(index, attachment)| ClassroomMaterial {
                     course_id: course_id.to_string(),
-                    material_id: format!("{parent_kind}:{parent_id}:{index}"),
+                    material_id: format!("{course_id}:{parent_kind}:{parent_id}:{index}"),
                     title: attachment.title().unwrap_or_else(|| parent_title.to_string()),
                     material_type: attachment.kind().map(str::to_string),
                     posted_at: posted_at.clone(),
@@ -471,7 +503,13 @@ pub async fn fetch_coursework_materials(
                 .map(str::to_string);
             ClassroomMaterial {
                 course_id: course_id.to_string(),
-                material_id: m.id,
+                // Prefixed with `course_id` for the same reason
+                // `materials_from_attachments` prefixes its synthesized
+                // ids — see that function's doc comment. Classroom's own
+                // `courseWorkMaterial.id` is expected to be unique on its
+                // own, but this makes the guarantee unconditional rather
+                // than assumed.
+                material_id: format!("{course_id}:material:{}", m.id),
                 title: m.title,
                 material_type,
                 posted_at: m.creation_time,

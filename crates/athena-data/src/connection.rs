@@ -84,7 +84,7 @@ mod tests {
             .expect("query sqlite_master");
         assert_eq!(
             domain_tables,
-            22,
+            24,
             "all expected domain tables should exist after migrations"
         );
     }

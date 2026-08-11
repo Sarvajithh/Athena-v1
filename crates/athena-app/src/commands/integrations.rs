@@ -1139,27 +1139,74 @@ pub struct ClassroomMaterialDto {
     pub fetched_at: String,
     pub seen: bool,
     pub studied: bool,
+    /// The Athena course (from Semester → "Add course") this material's
+    /// raw Classroom `course_id` resolves to, if that Classroom course
+    /// has been linked (auto- or hand-linked, `courses.classroom_course_id`)
+    /// to one. `None` when the material's course hasn't been added in
+    /// Athena yet (or hasn't been linked) — the frontend groups those
+    /// separately instead of hiding them or falling back to a raw
+    /// Classroom course id.
+    pub local_course_id: Option<i64>,
+    pub local_course_code: Option<String>,
+    pub local_course_title: Option<String>,
+    /// Classroom's own name/section for this material's course — used
+    /// as the display fallback (instead of the raw numeric
+    /// `course_id`) when no local course is linked yet.
+    pub classroom_course_name: Option<String>,
 }
 
 /// Every synced material, newest first, across every Classroom course —
 /// the "Materials" surface's one read. `seen` lets the frontend badge
 /// what's new since it was last looked at, without a separate
-/// unread-count command.
+/// unread-count command. Each row is enriched with whichever local
+/// Athena course (if any) its raw Classroom `course_id` has been linked
+/// to (`course_repo::list_all_linked_to_classroom`) and with
+/// Classroom's own course name (`classroom_courses`, always populated
+/// alongside a material by the same sync/pull that wrote it) — see
+/// `ClassroomMaterialDto`'s doc comment for why both are carried
+/// instead of just one.
 #[tauri::command]
 pub fn list_classroom_materials(db: State<'_, Mutex<Connection>>) -> Result<Vec<ClassroomMaterialDto>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let rows = integrations_repo::list_classroom_materials(&conn).map_err(|e| e.to_string())?;
+
+    let linked_courses = course_repo::list_all_linked_to_classroom(&conn).map_err(|e| e.to_string())?;
+    let mut local_by_classroom_id: std::collections::HashMap<String, &course_repo::CourseRow> =
+        std::collections::HashMap::new();
+    for c in &linked_courses {
+        if let Some(cc_id) = &c.classroom_course_id {
+            local_by_classroom_id.insert(cc_id.clone(), c);
+        }
+    }
+
+    let classroom_courses = integrations_repo::list_classroom_courses(&conn).map_err(|e| e.to_string())?;
+    let mut classroom_name_by_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for c in &classroom_courses {
+        let name = match &c.section {
+            Some(section) if !section.is_empty() => format!("{} — {}", c.name, section),
+            _ => c.name.clone(),
+        };
+        classroom_name_by_id.insert(c.course_id.clone(), name);
+    }
+
     Ok(rows
         .into_iter()
-        .map(|r| ClassroomMaterialDto {
-            material_id: r.material_id,
-            course_id: r.course_id,
-            title: r.title,
-            material_type: r.material_type,
-            posted_at: r.posted_at,
-            fetched_at: r.fetched_at,
-            seen: r.seen,
-            studied: r.studied,
+        .map(|r| {
+            let local = local_by_classroom_id.get(&r.course_id);
+            ClassroomMaterialDto {
+                local_course_id: local.map(|c| c.id),
+                local_course_code: local.map(|c| c.code.clone()),
+                local_course_title: local.map(|c| c.title.clone()),
+                classroom_course_name: classroom_name_by_id.get(&r.course_id).cloned(),
+                material_id: r.material_id,
+                course_id: r.course_id,
+                title: r.title,
+                material_type: r.material_type,
+                posted_at: r.posted_at,
+                fetched_at: r.fetched_at,
+                seen: r.seen,
+                studied: r.studied,
+            }
         })
         .collect())
 }

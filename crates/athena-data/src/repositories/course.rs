@@ -101,6 +101,22 @@ fn row_to_course(row: &rusqlite::Row<'_>) -> rusqlite::Result<CourseRow> {
     })
 }
 
+/// Every course, across every semester, that has been linked to a
+/// Google Classroom course (`classroom_course_id IS NOT NULL`) — used
+/// to resolve a synced `classroom_materials` row's raw Classroom
+/// `course_id` back to "the course I actually added in Athena"
+/// regardless of which semester that course belongs to. Deliberately
+/// not scoped to the current semester: a person can be revisiting an
+/// older semester's materials, and this is a lookup table, not a
+/// listing surface.
+pub fn list_all_linked_to_classroom(conn: &Connection) -> Result<Vec<CourseRow>, DataError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COURSE_COLUMNS} FROM courses WHERE classroom_course_id IS NOT NULL"
+    ))?;
+    let rows = stmt.query_map([], row_to_course)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn list_by_semester(conn: &Connection, semester_id: i64) -> Result<Vec<CourseRow>, DataError> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COURSE_COLUMNS} FROM courses WHERE semester_id = ?1 ORDER BY id"

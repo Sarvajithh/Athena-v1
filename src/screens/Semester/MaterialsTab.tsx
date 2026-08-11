@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Card } from '../../components/shared/Card';
 import {
-  listClassroomCourses,
+  linkCourseToClassroom,
   listClassroomMaterials,
   markClassroomMaterialsSeen,
   pullClassroomMaterials,
   setClassroomMaterialStudied,
-  type ClassroomCourseDto,
   type ClassroomMaterialDto,
 } from '../../ipc/bindings';
+import { useBootstrap } from '../../state/bootstrapContext';
 import styles from './Semester.module.css';
 
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
@@ -40,18 +40,20 @@ const MATERIAL_TYPE_LABELS: Record<string, string> = {
  * sync trigger.
  */
 export function MaterialsTab() {
-  const [courses, setCourses] = useState<ClassroomCourseDto[]>([]);
+  const { state, refresh } = useBootstrap();
+  const courses = state?.courses ?? [];
   const [materials, setMaterials] = useState<ClassroomMaterialDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [togglingMaterialId, setTogglingMaterialId] = useState<string | null>(null);
   const [pulling, setPulling] = useState(false);
   const [pullResult, setPullResult] = useState<string | null>(null);
+  const [linkingClassroomId, setLinkingClassroomId] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   const load = async () => {
     setError(null);
-    const [courseRows, materialRows] = await Promise.all([listClassroomCourses(), listClassroomMaterials()]);
-    setCourses(courseRows);
+    const materialRows = await listClassroomMaterials();
     setMaterials(materialRows);
     const unseenIds = materialRows.filter((m) => !m.seen).map((m) => m.material_id);
     if (unseenIds.length > 0) {
@@ -92,6 +94,30 @@ export function MaterialsTab() {
     }
   };
 
+  // Manual fallback for when auto-linking (title-match, at pull time)
+  // didn't catch a course — e.g. the person's Athena title and
+  // Classroom's title diverge more than the strict matcher allows.
+  // Reuses the same `linkCourseToClassroom` command the per-course Info
+  // tab uses, just exposed inline here so fixing an unmatched group
+  // doesn't require navigating away from this tab. `refresh()` updates
+  // `state.courses` (which flows back into `groups` below), and `load()`
+  // re-fetches materials so the just-linked group re-resolves to its
+  // Athena course immediately.
+  const handleManualLink = async (classroomCourseId: string, localCourseId: number) => {
+    if (!localCourseId) return;
+    setLinkingClassroomId(classroomCourseId);
+    setLinkError(null);
+    try {
+      await linkCourseToClassroom(localCourseId, classroomCourseId);
+      await refresh();
+      await load();
+    } catch (e) {
+      setLinkError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLinkingClassroomId(null);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -107,25 +133,62 @@ export function MaterialsTab() {
     };
   }, []);
 
-  const courseNameById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const c of courses) map.set(c.course_id, c.section ? `${c.name} — ${c.section}` : c.name);
-    return map;
-  }, [courses]);
-
+  // Groups materials by the *Athena* course they belong to, not by
+  // Classroom's own course — that's the whole point of this tab per
+  // the product vision: a material should land under the course a
+  // person actually added (whose title they chose), not under
+  // whatever Classroom happens to call it (or worse, a raw numeric
+  // Classroom course id if that course was never returned by
+  // `listClassroomCourses`, e.g. archived/removed on Classroom's
+  // side). Materials whose Classroom course hasn't been linked to any
+  // Athena course yet fall into a dedicated "not added in Athena"
+  // group instead of being hidden or mislabeled.
   const groups = useMemo(() => {
-    const byCourse = new Map<string, ClassroomMaterialDto[]>();
+    const byGroup = new Map<string, ClassroomMaterialDto[]>();
     for (const m of materials) {
-      const list = byCourse.get(m.course_id) ?? [];
+      // Matched materials group by the Athena course id (one bucket per
+      // course, however many Classroom entities feed it). Unmatched
+      // materials still group per distinct Classroom course, not lumped
+      // into one bucket — an unlinked "AI3403" and an unlinked "AI4000"
+      // should read as two separate "not added yet" cards, not one.
+      const key = m.local_course_id != null ? `local:${m.local_course_id}` : `unmatched:${m.course_id}`;
+      const list = byGroup.get(key) ?? [];
       list.push(m);
-      byCourse.set(m.course_id, list);
+      byGroup.set(key, list);
     }
-    return Array.from(byCourse.entries()).sort(([aId], [bId]) => {
-      const aName = courseNameById.get(aId) ?? aId;
-      const bName = courseNameById.get(bId) ?? bId;
-      return aName.localeCompare(bName);
+
+    const groupInfo = (groupMaterials: ClassroomMaterialDto[]) => {
+      const first = groupMaterials[0];
+      if (!first) return { matched: false, label: 'Unknown' };
+      const matched = first.local_course_id != null;
+      const label = matched
+        ? first.local_course_code
+          ? `${first.local_course_code} — ${first.local_course_title}`
+          : (first.local_course_title ?? first.course_id)
+        : `${first.classroom_course_name ?? first.course_id} · not added in Athena yet`;
+      return { matched, label };
+    };
+
+    const entries = Array.from(byGroup.entries()).map(([key, groupMaterials]) => {
+      const { matched, label } = groupInfo(groupMaterials);
+      const classroomCourseId = groupMaterials[0]?.course_id ?? '';
+      return { key, label, matched, classroomCourseId, groupMaterials };
     });
-  }, [materials, courseNameById]);
+
+    // Matched (real, added) courses sorted alphabetically by their
+    // Athena title and shown first; unmatched Classroom courses follow,
+    // also sorted alphabetically, so they read as a distinct "still
+    // needs linking" section rather than being interleaved.
+    entries.sort((a, b) => {
+      if (a.matched !== b.matched) return a.matched ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+
+    return entries.map(
+      ({ key, label, matched, classroomCourseId, groupMaterials }) =>
+        [key, label, matched, classroomCourseId, groupMaterials] as const,
+    );
+  }, [materials]);
 
   const formatTimestamp = (iso: string | null) => {
     if (!iso) return null;
@@ -178,11 +241,42 @@ export function MaterialsTab() {
   return (
     <div className={styles.form}>
       {pullHeader}
-      {groups.map(([courseId, courseMaterials]) => (
-        <Card key={courseId} className={styles.card}>
-          <h2 className={`${styles.sectionTitle} type-body-medium`}>
-            {courseNameById.get(courseId) ?? courseId}
-          </h2>
+      {groups.map(([groupKey, label, matched, classroomCourseId, courseMaterials]) => (
+        <Card key={groupKey} className={styles.card}>
+          <h2 className={`${styles.sectionTitle} type-body-medium`}>{label}</h2>
+          {!matched && (
+            <>
+              <p className={`${styles.hint} type-caption`}>
+                This Classroom course isn't linked to a course you've added in Athena yet — pick which one it
+                is below, or add the course first (Semester → Overview) if it isn't listed.
+              </p>
+              {courses.length > 0 ? (
+                <div className={styles.field}>
+                  <select
+                    className={styles.input}
+                    value=""
+                    disabled={linkingClassroomId === classroomCourseId}
+                    onChange={(e) => {
+                      const localCourseId = Number(e.target.value);
+                      if (localCourseId) void handleManualLink(classroomCourseId, localCourseId);
+                    }}
+                  >
+                    <option value="">
+                      {linkingClassroomId === classroomCourseId ? 'Linking…' : 'Link to a course you added…'}
+                    </option>
+                    {courses.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code} — {c.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <p className="type-caption">No courses added yet — add one in Semester → Overview first.</p>
+              )}
+              {linkError && <p className={`${styles.error} type-caption`}>{linkError}</p>}
+            </>
+          )}
           <div className={styles.list}>
             {courseMaterials.map((m) => (
               <div key={m.material_id} className={styles.row}>

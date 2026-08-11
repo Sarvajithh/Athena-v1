@@ -1,0 +1,26 @@
+-- V16__classroom_material_id_reset.sql
+--
+-- `material_id` for attachment-derived rows (materials attached
+-- directly to a `courseWork`/announcement item, and `courseWorkMaterial`
+-- rows themselves) is now prefixed with `course_id`
+-- (`{course_id}:{parent_kind}:{parent_id}:{index}` /
+-- `{course_id}:material:{id}`) instead of leaving `course_id` out —
+-- see `materials_from_attachments`'s doc comment in the
+-- `google_classroom` connector for why: without it, two attachments in
+-- two different courses could in principle synthesize to the same
+-- `material_id`, and since that column is `classroom_materials`'s
+-- primary key, a collision silently overwrites one course's material
+-- with another's on the next upsert (fewer materials end up visible
+-- than were actually pulled).
+--
+-- Every row already in this table was written under the *old* id
+-- format, so none of them match what the connector will synthesize
+-- going forward — left in place, they'd just sit as permanent orphaned
+-- rows (never updated again, cluttering the Materials tab) rather than
+-- being replaced by their re-synced, correctly-namespaced equivalent.
+-- `classroom_materials` is a pure sync cache — nothing else references
+-- its rows by id, and every row here is losslessly re-derivable from
+-- Google Classroom by hitting "Pull Materials" (or waiting for the
+-- next 30-minute background sync) — so clearing it once is safe and
+-- simpler than rewriting ids in place.
+DELETE FROM classroom_materials;

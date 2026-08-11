@@ -678,6 +678,12 @@ export interface ClassroomMaterialDto {
   seen: boolean;
   /** Explicit, person-set "I studied this" — separate from `seen`. */
   studied: boolean;
+  /** The Athena course (Semester → "Add course") this material's Classroom course has been linked to, if any. */
+  local_course_id: number | null;
+  local_course_code: string | null;
+  local_course_title: string | null;
+  /** Classroom's own name/section for this material's course — display fallback when no local course is linked. */
+  classroom_course_name: string | null;
 }
 
 /** Every synced material across every Classroom course, newest first. */
